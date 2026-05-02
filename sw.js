@@ -1,4 +1,4 @@
-const CACHE = 'kosocrm-v22';
+const CACHE = 'kosocrm-v23';
 const ASSETS = [
   './',
   './index.html',
@@ -29,6 +29,11 @@ self.addEventListener('activate', (e) => {
 self.addEventListener('fetch', (e) => {
   if (e.request.method !== 'GET') return;
   e.respondWith(
-    caches.match(e.request).then((hit) => hit || fetch(e.request).catch(() => hit))
+    caches.match(e.request).then((hit) => {
+      if (hit) return hit;
+      return fetch(e.request).catch(() =>
+        caches.match(new URL('index.html', self.registration.scope))
+      );
+    })
   );
 });
