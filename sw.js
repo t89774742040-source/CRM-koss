@@ -1,4 +1,4 @@
-const CACHE = 'kosocrm-v24';
+const CACHE = 'kosocrm-v25';
 const ASSETS = [
   './',
   './index.html',
@@ -8,8 +8,10 @@ const ASSETS = [
   './format.js',
   './license.js',
   './views.js',
+  './excel-clients.js',
   './app.js',
   './icon.svg',
+  './js/xlsx.full.min.js',
 ];
 
 self.addEventListener('install', (e) => {

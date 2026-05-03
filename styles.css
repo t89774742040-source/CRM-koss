@@ -542,3 +542,20 @@ button.mat-pick-item:active {
   border-style: dashed;
   border-color: var(--warn);
 }
+
+/* Фокус: обводка только при навигации с клавиатуры, не при каждом клике мышью */
+:focus:not(:focus-visible) {
+  outline: none;
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* Ячейки статистики на «Сегодня»: без синего выделения текста при тапе/протаскивании */
+.stat-grid .card.compact,
+.stat-grid .stat-big {
+  -webkit-user-select: none;
+  user-select: none;
+}

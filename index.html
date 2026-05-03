@@ -16,6 +16,29 @@
       <div class="toast" role="status"></div>
     </template>
     <input type="file" id="import-file" accept="application/json" hidden />
+    <input
+      type="file"
+      id="xlsx-clients-file"
+      accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+      hidden
+    />
+    <div id="xlsx-preview-modal" class="mat-pick-sheet" aria-hidden="true">
+      <div class="mat-pick-sheet-inner card" style="max-width: 420px; margin: auto 0; background: var(--card)">
+        <div class="mat-pick-head">
+          <h2 style="margin: 0; font-size: 1.15rem">Импорт клиентов из Excel</h2>
+        </div>
+        <p id="xlsx-preview-text" class="muted" style="margin: 0 0 16px; line-height: 1.45"></p>
+        <div style="display: flex; gap: 10px; flex-wrap: wrap">
+          <button type="button" class="btn btn-secondary" id="xlsx-preview-cancel" style="flex: 1; min-width: 120px">
+            Отмена
+          </button>
+          <button type="button" class="btn btn-primary" id="xlsx-preview-ok" style="flex: 1; min-width: 120px">
+            Добавить
+          </button>
+        </div>
+      </div>
+    </div>
+    <script src="./js/xlsx.full.min.js"></script>
     <script type="module" src="./app.js"></script>
   </body>
 </html>

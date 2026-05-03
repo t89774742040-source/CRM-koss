@@ -1,5 +1,6 @@
 import * as License from './license.js';
 import * as F from './format.js';
+import { setupExcelClientImport, attachExcelClientButtons } from './excel-clients.js';
 
 const WIZARD_KEY = 'kosoWizardV1';
 
@@ -161,6 +162,7 @@ export async function mount(shell, ctx) {
   }
 
   wireImport(ctx);
+  setupExcelClientImport(ctx);
 }
 
 function renderOnboarding() {
@@ -314,6 +316,18 @@ async function renderToday(db, meta, go) {
         .join('')
     : `<div class="empty-hint">На сегодня записей нет.<br />Добавьте первую запись.</div>`;
 
+  const serviceBlock = `<div class="card" style="margin-top:20px">
+      <div class="card-title">Тест и резервная копия</div>
+      <p class="muted" style="font-size:0.85rem;margin:0 0 12px;line-height:1.45">
+        Демо-данные для проверки экранов и резервная копия IndexedDB в файл JSON на ваше устройство.
+      </p>
+      <button type="button" class="btn btn-secondary" id="svc-demo" style="margin-bottom:10px">Заполнить демо-данными</button>
+      <button type="button" class="btn btn-secondary" style="margin-bottom:10px" id="svc-export">Выгрузить данные</button>
+      <button type="button" class="btn btn-secondary" style="margin-bottom:10px" id="svc-import">Загрузить данные</button>
+      <button type="button" class="btn btn-secondary" style="margin-bottom:10px" id="svc-xlsx-import">Импорт клиентов из Excel</button>
+      <button type="button" class="btn btn-secondary" id="svc-xlsx-template">Скачать шаблон Excel</button>
+    </div>`;
+
   return `<header class="page-header">
     <div>
       <h1>Привет, ${esc(name)}</h1>
@@ -351,6 +365,7 @@ async function renderToday(db, meta, go) {
     <button type="button" class="btn btn-primary" id="btn-new-appt">＋ Новая запись</button>
     <h2 style="margin:20px 0 10px;font-size:1rem">Записи на сегодня</h2>
     <div class="list-gap">${cards}</div>
+    ${serviceBlock}
   </div>`;
 }
 
@@ -388,6 +403,48 @@ export function attachToday(shell, db, go, refresh) {
       go(`complete-${id}`);
     });
   });
+  attachServiceBlock(root, db, go, refresh);
+}
+
+/** Кнопки демо / выгрузки / загрузки JSON (используются на «Сегодня» и в «Настройках»). */
+function attachServiceBlock(root, db, go, refresh) {
+  root.querySelector('#svc-demo')?.addEventListener('click', async () => {
+    const already = await db.getMeta('demoPackLoadedV1');
+    if (already) {
+      toast('Тестовые данные уже были добавлены ранее.');
+      return;
+    }
+    if (!confirm('Демо-данные будут добавлены в базу. Продолжить?')) return;
+    try {
+      const r = await db.loadDemoPack();
+      if (!r.ok && r.reason === 'already_loaded') {
+        toast('Тестовые данные уже были добавлены ранее.');
+        return;
+      }
+      await refresh();
+      go('today');
+      toast('Демо-данные добавлены.');
+    } catch (e) {
+      console.error(e);
+      toast('Не удалось добавить демо.');
+    }
+  });
+
+  root.querySelector('#svc-export')?.addEventListener('click', async () => {
+    const data = await db.exportAll();
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `kosopletenie-crm-backup-${F.todayISO()}.json`;
+    a.click();
+    URL.revokeObjectURL(a.href);
+    toast('Файл скачан');
+  });
+
+  root.querySelector('#svc-import')?.addEventListener('click', () => {
+    document.getElementById('import-file')?.click();
+  });
+  attachExcelClientButtons(root);
 }
 
 async function renderRecords(db, go) {
@@ -1384,9 +1441,20 @@ async function renderSettings(db, meta, go, refresh) {
     <input class="field" id="st-code" placeholder="Код полной версии" />
     <button type="button" class="btn btn-secondary" id="st-activate">Активировать код</button>
     <hr class="soft" />
-    <button type="button" class="btn btn-secondary" id="st-export">Экспорт базы (JSON)</button>
-    <button type="button" class="btn btn-secondary" id="st-import">Импорт базы (JSON)</button>
-    <p class="muted" style="font-size:0.8rem">Импорт заменяет все данные. Сделайте резервную копию.</p>
+    <div class="card">
+      <div class="card-title">Тест и резервная копия</div>
+      <p class="muted" style="font-size:0.85rem;margin:0 0 12px;line-height:1.45">
+        То же, что внизу экрана «Сегодня»: демо-данные и полный экспорт/импорт IndexedDB.
+      </p>
+      <button type="button" class="btn btn-secondary" id="svc-demo" style="margin-bottom:10px">Заполнить демо-данными</button>
+      <button type="button" class="btn btn-secondary" style="margin-bottom:10px" id="svc-export">Выгрузить данные</button>
+      <button type="button" class="btn btn-secondary" style="margin-bottom:10px" id="svc-import">Загрузить данные</button>
+      <button type="button" class="btn btn-secondary" style="margin-bottom:10px" id="svc-xlsx-import">Импорт клиентов из Excel</button>
+      <button type="button" class="btn btn-secondary" id="svc-xlsx-template">Скачать шаблон Excel</button>
+      <p class="muted" style="font-size:0.8rem;margin-top:12px;margin-bottom:0">
+        При загрузке JSON база целиком заменится — перед этим лучше выгрузить резервную копию. Импорт Excel только добавляет клиентов.
+      </p>
+    </div>
   </div>`;
 }
 
@@ -1411,19 +1479,7 @@ export function attachSettings(shell, db, go, refresh) {
     await refresh();
     go('today');
   });
-  root.querySelector('#st-export')?.addEventListener('click', async () => {
-    const data = await db.exportAll();
-    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(blob);
-    a.download = `kosopletenie-backup-${F.todayISO()}.json`;
-    a.click();
-    URL.revokeObjectURL(a.href);
-    toast('Файл скачан');
-  });
-  root.querySelector('#st-import')?.addEventListener('click', () => {
-    document.getElementById('import-file')?.click();
-  });
+  attachServiceBlock(root, db, go, refresh);
 }
 
 function wireImport(ctx) {
@@ -1434,6 +1490,7 @@ function wireImport(ctx) {
     const file = input.files?.[0];
     input.value = '';
     if (!file) return;
+    if (!confirm('Импорт заменит текущую базу. Продолжить?')) return;
     try {
       const text = await file.text();
       const data = JSON.parse(text);

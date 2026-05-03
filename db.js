@@ -588,6 +588,184 @@ function createApi(db) {
     await txDone(tx);
   }
 
+  /** Ключ meta: одноразовая загрузка тестового набора (клиенты, прайс, склад, записи). */
+  const DEMO_PACK_META_KEY = 'demoPackLoadedV1';
+
+  /**
+   * Добавляет тестовых клиентов, услуги, материалы, приход на склад и 3 записи.
+   * Не дублирует, если ранее уже выставлен флаг demoPackLoadedV1.
+   */
+  async function loadDemoPack() {
+    if (await getMeta(DEMO_PACK_META_KEY)) {
+      return { ok: false, reason: 'already_loaded' };
+    }
+
+    function isoToday() {
+      const d = new Date();
+      const y = d.getFullYear();
+      const m = String(d.getMonth() + 1).padStart(2, '0');
+      const day = String(d.getDate()).padStart(2, '0');
+      return `${y}-${m}-${day}`;
+    }
+
+    function isoAddDays(iso, n) {
+      const [y, m, d] = iso.split('-').map(Number);
+      const t = new Date(y, m - 1, d + Number(n));
+      const yy = t.getFullYear();
+      const mm = String(t.getMonth() + 1).padStart(2, '0');
+      const dd = String(t.getDate()).padStart(2, '0');
+      return `${yy}-${mm}-${dd}`;
+    }
+
+    const today = isoToday();
+    const tomorrow = isoAddDays(today, 1);
+
+    const clientId1 = await addClient({
+      name: 'Демо · Анна Петрова',
+      phone: '+7 900 111-01-01',
+      telegram: '',
+      notes: 'Тестовый клиент',
+    });
+    const clientId2 = await addClient({
+      name: 'Демо · Мария Соколова',
+      phone: '+7 900 222-02-02',
+      telegram: '',
+      notes: 'Тестовый клиент',
+    });
+    const clientId3 = await addClient({
+      name: 'Демо · Елена Волкова',
+      phone: '+7 900 333-03-03',
+      telegram: '',
+      notes: 'Тестовый клиент',
+    });
+
+    const serviceName1 = 'Демо · Косы-коробочки';
+    const serviceName2 = 'Демо · Брейды классика';
+    const sid1 = await addService({
+      name: serviceName1,
+      basePrice: 4200,
+      plannedMinutes: 180,
+      defaultDifficulty: 3,
+      note: 'Прайс для теста',
+    });
+    const sid2 = await addService({
+      name: serviceName2,
+      basePrice: 2800,
+      plannedMinutes: 120,
+      defaultDifficulty: 2,
+      note: 'Прайс для теста',
+    });
+
+    const matName1 = 'Демо · Канекалон Premium';
+    const matName2 = 'Демо · Резинки набор';
+    const mid1 = await addMaterial({
+      name: matName1,
+      materialType: 'канекалон',
+      unit: 'g',
+      packagePrice: 600,
+      packageWeightGrams: 100,
+      packageQtyPcs: 0,
+      stock: 0,
+      minStock: 30,
+      comment: 'Демо склад',
+    });
+    const mid2 = await addMaterial({
+      name: matName2,
+      materialType: 'резинки',
+      unit: 'pcs',
+      packagePrice: 250,
+      packageWeightGrams: 0,
+      packageQtyPcs: 50,
+      stock: 0,
+      minStock: 10,
+      comment: 'Демо склад',
+    });
+
+    await stockPurchase({
+      materialId: mid1,
+      qty: 150,
+      unitPrice: 6,
+      supplier: 'Демо-поставщик',
+      date: today,
+      note: 'Партия для теста',
+    });
+    await stockPurchase({
+      materialId: mid2,
+      qty: 40,
+      unitPrice: 5,
+      supplier: 'Демо-поставщик',
+      date: today,
+      note: 'Мелкая фурнитура',
+    });
+
+    await addAppointment({
+      clientId: clientId1,
+      serviceId: sid1,
+      serviceNameSnapshot: serviceName1,
+      date: today,
+      time: '10:00',
+      difficulty: 3,
+      difficultyTags: [],
+      plannedMinutes: 180,
+      priceRub: 4200,
+      prepaymentRub: 0,
+      status: 'scheduled',
+      materialsPlan: [],
+      materialsFact: null,
+      receivedRub: null,
+      actualMinutes: null,
+      materialCostRub: null,
+      profitRub: null,
+      completedAt: null,
+      notes: '',
+    });
+    await addAppointment({
+      clientId: clientId2,
+      serviceId: sid2,
+      serviceNameSnapshot: serviceName2,
+      date: today,
+      time: '14:30',
+      difficulty: 2,
+      difficultyTags: [],
+      plannedMinutes: 120,
+      priceRub: 2800,
+      prepaymentRub: 0,
+      status: 'in_progress',
+      materialsPlan: [],
+      materialsFact: null,
+      receivedRub: null,
+      actualMinutes: null,
+      materialCostRub: null,
+      profitRub: null,
+      completedAt: null,
+      notes: '',
+    });
+    await addAppointment({
+      clientId: clientId3,
+      serviceId: sid2,
+      serviceNameSnapshot: serviceName2,
+      date: tomorrow,
+      time: '16:00',
+      difficulty: 2,
+      difficultyTags: [],
+      plannedMinutes: 120,
+      priceRub: 2800,
+      prepaymentRub: 0,
+      status: 'scheduled',
+      materialsPlan: [],
+      materialsFact: null,
+      receivedRub: null,
+      actualMinutes: null,
+      materialCostRub: null,
+      profitRub: null,
+      completedAt: null,
+      notes: '',
+    });
+
+    await setMeta(DEMO_PACK_META_KEY, true);
+    return { ok: true };
+  }
+
   async function exportAll() {
     const [metaRows, clients, services, materials, appointments, stockMovements] =
       await Promise.all([
@@ -605,11 +783,13 @@ function createApi(db) {
     return {
       version: 1,
       exportedAt: new Date().toISOString(),
+      /** meta: имя мастера, триал, активация, флаги вроде demoPackLoadedV1 */
       meta: metaRows,
       clients,
       services,
       materials,
       appointments,
+      /** Движения склада: приходы и списания (часто называют materialTransactions). */
       stockMovements,
     };
   }
@@ -648,7 +828,8 @@ function createApi(db) {
       putAll('services', data.services);
       putAll('materials', data.materials);
       putAll('appointments', data.appointments);
-      putAll('stockMovements', data.stockMovements);
+      const movements = data.stockMovements ?? data.materialTransactions;
+      putAll('stockMovements', movements);
     });
   }
 
@@ -687,6 +868,7 @@ function createApi(db) {
     completeAppointment,
     exportAll,
     importAll,
+    loadDemoPack,
     deleteOrArchiveMaterial,
     cleanupTestMaterials,
   };
