@@ -119,15 +119,7 @@ async function init() {
   window.addEventListener('hashchange', () => render());
   await render();
 
-  if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
-    try {
-      const swUrl = new URL('../sw.js', import.meta.url);
-      const scopeUrl = new URL('../', import.meta.url).href;
-      await navigator.serviceWorker.register(swUrl, { scope: scopeUrl });
-    } catch {
-      /* ignore */
-    }
-  }
+  /* Service worker отключён до проверки на GitHub Pages. Включить: register ./sw.js с scope каталога приложения. */
 }
 
 init();

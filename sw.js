@@ -1,15 +1,15 @@
-const CACHE = 'kosocrm-v23';
+const CACHE = 'kosocrm-v24';
 const ASSETS = [
   './',
   './index.html',
   './manifest.json',
-  './css/styles.css',
-  './js/db.js',
-  './js/format.js',
-  './js/license.js',
-  './js/views.js',
-  './js/app.js',
-  './icons/icon.svg',
+  './styles.css',
+  './db.js',
+  './format.js',
+  './license.js',
+  './views.js',
+  './app.js',
+  './icon.svg',
 ];
 
 self.addEventListener('install', (e) => {
