@@ -98,6 +98,41 @@ export function appointmentWindowMs(dateISO, timeStr, plannedMinutes) {
   return { startMs, endMs };
 }
 
+/**
+ * MVP: до plannedStart — «Запланировано», с начала слота до завершения визита — «В работе» (без «Просрочено»).
+ * plannedEnd на подпись не влияет: после конца окна незавершённая запись остаётся «В работе».
+ * Сравнение с «сейчас» только для записей на сегодня (на другие даты — «Запланировано», если не done/cancelled).
+ * @returns {'done'|'cancelled'|'in_progress'|'upcoming'}
+ */
+export function appointmentSchedulePhase(ap, nowMs = Date.now()) {
+  if (ap.status === 'done') return 'done';
+  if (ap.status === 'cancelled') return 'cancelled';
+  const dateStr = (ap.date || '').split('T')[0];
+  if (dateStr && dateStr !== todayISO()) return 'upcoming';
+  const w = appointmentWindowMs(ap.date, ap.time, ap.plannedMinutes);
+  if (!w) return 'upcoming';
+  if (nowMs < w.startMs) return 'upcoming';
+  return 'in_progress';
+}
+
+/** Русская подпись для бейджа. */
+export function appointmentStatusLabel(ap, nowMs = Date.now()) {
+  const phase = appointmentSchedulePhase(ap, nowMs);
+  if (phase === 'done') return 'Завершено';
+  if (phase === 'cancelled') return 'Отмена';
+  if (phase === 'in_progress') return 'В работе';
+  return 'Запланировано';
+}
+
+/** Классы бейджа (без warn для «просрочки»). */
+export function appointmentBadgeClass(ap, nowMs = Date.now()) {
+  const phase = appointmentSchedulePhase(ap, nowMs);
+  if (phase === 'done') return 'badge ok';
+  if (phase === 'cancelled') return 'badge';
+  if (phase === 'in_progress') return 'badge';
+  return 'badge ok';
+}
+
 /** HH:MM по локальному времени для метки времени */
 export function msToClockHHMM(ms) {
   const dt = new Date(ms);

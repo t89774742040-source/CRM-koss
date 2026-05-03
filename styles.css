@@ -419,6 +419,49 @@ textarea.field {
   font-size: 0.9rem;
 }
 
+/* «Тест и сохранение данных»: вертикальный ритм, подписи только под кнопками */
+.svc-data-card {
+  text-align: center;
+}
+
+.svc-data-lead {
+  margin: 0 0 16px;
+  font-size: 0.9rem;
+  line-height: 1.45;
+  color: var(--muted);
+  font-weight: 400;
+}
+
+.svc-data-action {
+  margin-bottom: 15px;
+}
+
+.svc-data-action:last-child {
+  margin-bottom: 0;
+}
+
+.svc-data-hint {
+  margin: 6px 0 0;
+  font-size: 0.85rem;
+  line-height: 1.45;
+  color: var(--muted);
+  font-weight: 400;
+}
+
+.svc-data-hint--fine {
+  font-size: 0.8rem;
+  margin-top: 4px;
+}
+
+.svc-data-footnote {
+  margin: 0;
+  padding: 0;
+  font-size: 0.85rem;
+  line-height: 1.45;
+  color: var(--muted);
+  text-align: center;
+}
+
 .toast {
   position: fixed;
   bottom: calc(var(--nav-h) + 16px + env(safe-area-inset-bottom, 0));

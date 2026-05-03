@@ -1,5 +1,5 @@
 /**
- * Импорт клиентов из Excel (.xlsx) через SheetJS.
+ * Импорт клиентов (имя и телефон) из .xlsx через SheetJS.
  * Библиотека подключается в index.html как ./js/xlsx.full.min.js (глобальный XLSX).
  */
 
@@ -306,7 +306,7 @@ export function setupExcelClientImport(ctx) {
   });
 }
 
-/** Кнопки в карточке «Тест и резервная копия» (вызывать при каждом рендере экрана). */
+/** Кнопки в карточке «Тест и сохранение данных» (вызывать при каждом рендере экрана). */
 export function attachExcelClientButtons(root) {
   root.querySelector('#svc-xlsx-template')?.addEventListener('click', () => {
     try {

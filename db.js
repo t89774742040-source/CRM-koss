@@ -1,5 +1,5 @@
 const DB_NAME = 'kosopletenie-crm';
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 
 function promisify(req) {
   return new Promise((resolve, reject) => {
@@ -46,6 +46,19 @@ export async function openDb() {
         const m = db.createObjectStore('stockMovements', { keyPath: 'id', autoIncrement: true });
         m.createIndex('date', 'date', { unique: false });
         m.createIndex('materialId', 'materialId', { unique: false });
+      }
+      if (e.oldVersion < 2 && db.objectStoreNames.contains('appointments')) {
+        const store = e.target.transaction.objectStore('appointments');
+        store.openCursor().onsuccess = (ev) => {
+          const cursor = ev.target.result;
+          if (!cursor) return;
+          const row = cursor.value;
+          if (row.status === 'in_progress') {
+            row.status = 'scheduled';
+            cursor.update(row);
+          }
+          cursor.continue();
+        };
       }
     };
   });
@@ -392,13 +405,34 @@ function createApi(db) {
     return promisify(tx.objectStore('appointments').get(Number(id)));
   }
 
+  function normalizeAppointmentStatus(row) {
+    if (row && row.status === 'in_progress') row.status = 'scheduled';
+  }
+
   async function putAppointment(row) {
+    normalizeAppointmentStatus(row);
     const tx = db.transaction('appointments', 'readwrite');
     tx.objectStore('appointments').put(row);
     await txDone(tx);
   }
 
+  /**
+   * Зафиксировать фактическое начало визита (один раз; повторный вызов — noop с alreadyStarted).
+   */
+  async function startAppointmentNow(appointmentId) {
+    const ap = await getAppointment(Number(appointmentId));
+    if (!ap) throw new Error('Запись не найдена');
+    if (ap.status === 'done' || ap.status === 'cancelled')
+      return { ok: false, reason: 'invalid_status' };
+    const existing = Number(ap.actualStartAt);
+    if (Number.isFinite(existing) && existing > 0) return { ok: true, alreadyStarted: true };
+    ap.actualStartAt = Date.now();
+    await putAppointment(ap);
+    return { ok: true };
+  }
+
   async function addAppointment(row) {
+    normalizeAppointmentStatus(row);
     const tx = db.transaction('appointments', 'readwrite');
     const id = await promisify(tx.objectStore('appointments').add(row));
     await txDone(tx);
@@ -553,6 +587,7 @@ function createApi(db) {
     const dateStr = (ap.date || new Date().toISOString().slice(0, 10)).split('T')[0];
     const lines = Array.isArray(data.materialsFact) ? data.materialsFact : [];
     ap.status = 'done';
+    ap.actualEndAt = Date.now();
     ap.actualMinutes = data.actualMinutes != null ? Number(data.actualMinutes) : ap.plannedMinutes;
     ap.materialsFact = lines;
     ap.receivedRub = Math.max(0, Number(data.receivedRub) || 0);
@@ -714,6 +749,8 @@ function createApi(db) {
       materialsFact: null,
       receivedRub: null,
       actualMinutes: null,
+      actualStartAt: null,
+      actualEndAt: null,
       materialCostRub: null,
       profitRub: null,
       completedAt: null,
@@ -730,11 +767,13 @@ function createApi(db) {
       plannedMinutes: 120,
       priceRub: 2800,
       prepaymentRub: 0,
-      status: 'in_progress',
+      status: 'scheduled',
       materialsPlan: [],
       materialsFact: null,
       receivedRub: null,
       actualMinutes: null,
+      actualStartAt: null,
+      actualEndAt: null,
       materialCostRub: null,
       profitRub: null,
       completedAt: null,
@@ -756,6 +795,8 @@ function createApi(db) {
       materialsFact: null,
       receivedRub: null,
       actualMinutes: null,
+      actualStartAt: null,
+      actualEndAt: null,
       materialCostRub: null,
       profitRub: null,
       completedAt: null,
@@ -821,7 +862,10 @@ function createApi(db) {
         if (!Array.isArray(rows)) return;
         const s = tx.objectStore(storeName);
         for (const row of rows) {
-          if (row && row.id != null) s.put(row);
+          if (row && row.id != null) {
+            if (storeName === 'appointments') normalizeAppointmentStatus(row);
+            s.put(row);
+          }
         }
       };
       putAll('clients', data.clients);
@@ -857,6 +901,7 @@ function createApi(db) {
     getAppointment,
     addAppointment,
     putAppointment,
+    startAppointmentNow,
     listMovements,
     addMovement,
     stockPurchase,

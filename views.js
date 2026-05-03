@@ -22,12 +22,39 @@ function toast(msg) {
   }, 2800);
 }
 
-const STATUS = {
-  scheduled: 'Запланировано',
-  in_progress: 'В работе',
-  done: 'Завершено',
-  cancelled: 'Отмена',
-};
+/** Разметка карточки «Тест и сохранение данных» (экран «Сегодня» и настройки). */
+function htmlDataBackupCard(footnoteHtml = '') {
+  return `
+      <div class="card-title">Тест и сохранение данных</div>
+      <p class="svc-data-lead">Заполните демо-записи или сохраните свои данные</p>
+
+      <div class="svc-data-action">
+        <button type="button" class="btn btn-secondary" id="svc-demo">Заполнить демо-данными</button>
+      </div>
+
+      <div class="svc-data-action">
+        <button type="button" class="btn btn-secondary" id="svc-export">Выгрузить данные</button>
+        <p class="svc-data-hint">Рекомендуем сохранять данные 1–2 раза в неделю, чтобы не потерять клиентов</p>
+      </div>
+
+      <div class="svc-data-action">
+        <button type="button" class="btn btn-secondary" id="svc-import">Загрузить данные</button>
+        <p class="svc-data-hint">Если данные пропали, вы можете восстановить их из сохранённого файла</p>
+        <p class="svc-data-hint svc-data-hint--fine">Работает, если вы ранее нажимали «Выгрузить данные»</p>
+      </div>
+
+      <div class="svc-data-action">
+        <button type="button" class="btn btn-secondary" id="svc-xlsx-import">Импорт клиентов (имя и телефон)</button>
+        <p class="svc-data-hint">Для переноса базы с услугами и датами будет доступен расширенный импорт</p>
+      </div>
+
+      <div class="svc-data-action">
+        <button type="button" class="btn btn-secondary" id="svc-xlsx-template">Скачать шаблон Excel</button>
+        <p class="svc-data-hint">Скачайте и заполните этот файл, чтобы загрузить клиентов в систему</p>
+        <p class="svc-data-hint svc-data-hint--fine">Важно: используйте именно этот шаблон, чтобы данные загрузились корректно</p>
+      </div>
+      ${footnoteHtml}`;
+}
 
 const MATERIAL_TYPES = [
   'канекалон',
@@ -257,34 +284,47 @@ async function renderToday(db, meta, go) {
   if (!dayForLoad.length) {
     nextScheduleLine = '<p class="status-line" style="margin:10px 0 0;font-size:0.9rem">Нет записей</p>';
   } else {
-    const unfinishedInWindow = timedRows.filter(
-      ({ a, startMs, endMs }) =>
-        a.status !== 'done' &&
-        startMs <= nowMs &&
-        nowMs <= endMs
+    const inProgressNow = timedRows.filter(
+      ({ a, startMs }) =>
+        a.status !== 'done' && a.status !== 'cancelled' && startMs <= nowMs
     );
-    unfinishedInWindow.sort((x, y) => x.startMs - y.startMs);
+    inProgressNow.sort((x, y) => x.startMs - y.startMs);
 
-    const futureScheduled = timedRows.filter(
-      ({ a, startMs }) => a.status === 'scheduled' && startMs > nowMs
+    const futureAppointments = timedRows.filter(
+      ({ a, startMs }) =>
+        a.status !== 'done' && a.status !== 'cancelled' && startMs > nowMs
     );
-    futureScheduled.sort((x, y) => x.startMs - y.startMs);
+    futureAppointments.sort((x, y) => x.startMs - y.startMs);
 
-    if (unfinishedInWindow.length) {
-      const { a, endMs } = unfinishedInWindow[0];
+    if (inProgressNow.length) {
+      const { a, endMs } = inProgressNow[0];
       const cName = clientMap[a.clientId]?.name || 'Клиент';
       const until = F.msToClockHHMM(endMs);
-      nextScheduleLine = `<p class="status-line" style="margin:10px 0 0;font-size:0.9rem;font-weight:600;color:var(--accent)">Сейчас: ${esc(cName)} (до ${esc(until)})</p>`;
-    } else if (futureScheduled.length) {
-      const hh = F.clockHHMM(futureScheduled[0].a.time);
+      const timeTail =
+        nowMs <= endMs ? ` (до ${esc(until)})` : '';
+      nextScheduleLine = `<p class="status-line" style="margin:10px 0 0;font-size:0.9rem;font-weight:600;color:var(--accent)">Сейчас: ${esc(cName)}${timeTail}</p>`;
+    } else if (futureAppointments.length) {
+      const hh = F.clockHHMM(futureAppointments[0].a.time);
       nextScheduleLine = `<p class="status-line" style="margin:10px 0 0;font-size:0.9rem">Следующая: ${esc(hh)}</p>`;
     } else {
-      nextScheduleLine =
-        '<p class="status-line" style="margin:10px 0 0;font-size:0.9rem">На сегодня всё выполнено</p>';
+      const hasIncomplete = dayForLoad.some(
+        (a) => a.status !== 'done' && a.status !== 'cancelled'
+      );
+      if (!hasIncomplete) {
+        nextScheduleLine =
+          '<p class="status-line" style="margin:10px 0 0;font-size:0.9rem">На сегодня всё выполнено</p>';
+      } else {
+        nextScheduleLine = '';
+      }
     }
   }
 
-  const sorted = [...day].sort((a, b) => (a.time || '').localeCompare(b.time || ''));
+  const sorted = [...day].sort((a, b) => {
+    const ma = F.timeHHMMToMinutes(a.time);
+    const mb = F.timeHHMMToMinutes(b.time);
+    if (ma != null && mb != null) return ma - mb;
+    return (a.time || '').localeCompare(b.time || '');
+  });
 
   const trialLeft = License.isActivated(meta)
     ? null
@@ -299,34 +339,25 @@ async function renderToday(db, meta, go) {
           return `<article class="card record-card" data-open="${a.id}">
           <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px">
             <div><strong>${esc(F.formatTime(a.time))}</strong> · ${esc(c?.name || 'Клиент')} ${star}</div>
-            <span class="badge ok">${esc(STATUS[a.status] || a.status)}</span>
+            <span class="${F.appointmentBadgeClass(a, nowMs)}">${esc(F.appointmentStatusLabel(a, nowMs))}</span>
           </div>
           <div style="margin-top:6px;font-weight:600">${esc(a.serviceNameSnapshot || '')}</div>
           <div class="status-line">План: ${esc(F.minutesToLabel(a.plannedMinutes))} · Сложн.: ${a.difficulty || '—'}</div>
           ${
-            a.status !== 'done'
-              ? `<div style="margin-top:10px;display:flex;gap:8px">
-              <button type="button" class="btn btn-secondary" style="padding:10px" data-inprog="${a.id}">В работе</button>
+            a.status !== 'done' && a.status !== 'cancelled'
+              ? `<div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap">
               <button type="button" class="btn btn-primary" style="padding:10px" data-done="${a.id}">Завершить</button>
             </div>`
-              : `<div class="status-line">Оплачено: ${F.money(a.receivedRub || 0)} · Прибыль: ${F.money(a.profitRub || 0)}</div>`
+              : a.status === 'done'
+                ? `<div class="status-line">Оплачено: ${F.money(a.receivedRub || 0)} · Прибыль: ${F.money(a.profitRub || 0)}</div>`
+                : ''
           }
         </article>`;
         })
         .join('')
     : `<div class="empty-hint">На сегодня записей нет.<br />Добавьте первую запись.</div>`;
 
-  const serviceBlock = `<div class="card" style="margin-top:20px">
-      <div class="card-title">Тест и резервная копия</div>
-      <p class="muted" style="font-size:0.85rem;margin:0 0 12px;line-height:1.45">
-        Демо-данные для проверки экранов и резервная копия IndexedDB в файл JSON на ваше устройство.
-      </p>
-      <button type="button" class="btn btn-secondary" id="svc-demo" style="margin-bottom:10px">Заполнить демо-данными</button>
-      <button type="button" class="btn btn-secondary" style="margin-bottom:10px" id="svc-export">Выгрузить данные</button>
-      <button type="button" class="btn btn-secondary" style="margin-bottom:10px" id="svc-import">Загрузить данные</button>
-      <button type="button" class="btn btn-secondary" style="margin-bottom:10px" id="svc-xlsx-import">Импорт клиентов из Excel</button>
-      <button type="button" class="btn btn-secondary" id="svc-xlsx-template">Скачать шаблон Excel</button>
-    </div>`;
+  const serviceBlock = `<div class="card svc-data-card" style="margin-top:20px">${htmlDataBackupCard()}</div>`;
 
   return `<header class="page-header">
     <div>
@@ -383,19 +414,6 @@ export function attachToday(shell, db, go, refresh) {
       go(`complete-${id}`);
     });
   });
-  root.querySelectorAll('[data-inprog]').forEach((b) => {
-    b.addEventListener('click', async (e) => {
-      e.stopPropagation();
-      const id = Number(b.getAttribute('data-inprog'));
-      const a = await db.getAppointment(id);
-      if (a) {
-        a.status = 'in_progress';
-        await db.putAppointment(a);
-        await refresh();
-        go('today');
-      }
-    });
-  });
   root.querySelectorAll('[data-done]').forEach((b) => {
     b.addEventListener('click', async (e) => {
       e.stopPropagation();
@@ -406,7 +424,7 @@ export function attachToday(shell, db, go, refresh) {
   attachServiceBlock(root, db, go, refresh);
 }
 
-/** Кнопки демо / выгрузки / загрузки JSON (используются на «Сегодня» и в «Настройках»). */
+/** Кнопки демо / выгрузки / загрузки данных («Сегодня» и «Настройки»). */
 function attachServiceBlock(root, db, go, refresh) {
   root.querySelector('#svc-demo')?.addEventListener('click', async () => {
     const already = await db.getMeta('demoPackLoadedV1');
@@ -450,6 +468,7 @@ function attachServiceBlock(root, db, go, refresh) {
 async function renderRecords(db, go) {
   const [appointments, clients] = await Promise.all([db.listAppointments(), db.listClients()]);
   const cmap = Object.fromEntries(clients.map((c) => [c.id, c]));
+  const nowMs = Date.now();
   const list = [...appointments].sort((a, b) => {
     const da = `${a.date} ${a.time || ''}`;
     const dbi = `${b.date} ${b.time || ''}`;
@@ -465,7 +484,7 @@ async function renderRecords(db, go) {
               <div style="font-weight:700">${esc(F.formatDateISO(a.date))} · ${esc(F.formatTime(a.time))}</div>
               <div class="status-line">${esc(c?.name || 'Клиент')}</div>
             </div>
-            <span class="badge">${esc(STATUS[a.status] || a.status)}</span>
+            <span class="${F.appointmentBadgeClass(a, nowMs)}">${esc(F.appointmentStatusLabel(a, nowMs))}</span>
           </div>
           <div style="margin-top:8px;font-weight:600">${esc(a.serviceNameSnapshot || '')}</div>
           <div class="status-line">${F.money(a.priceRub || 0)} · сложн. ${a.difficulty || '—'}</div>
@@ -1441,19 +1460,10 @@ async function renderSettings(db, meta, go, refresh) {
     <input class="field" id="st-code" placeholder="Код полной версии" />
     <button type="button" class="btn btn-secondary" id="st-activate">Активировать код</button>
     <hr class="soft" />
-    <div class="card">
-      <div class="card-title">Тест и резервная копия</div>
-      <p class="muted" style="font-size:0.85rem;margin:0 0 12px;line-height:1.45">
-        То же, что внизу экрана «Сегодня»: демо-данные и полный экспорт/импорт IndexedDB.
-      </p>
-      <button type="button" class="btn btn-secondary" id="svc-demo" style="margin-bottom:10px">Заполнить демо-данными</button>
-      <button type="button" class="btn btn-secondary" style="margin-bottom:10px" id="svc-export">Выгрузить данные</button>
-      <button type="button" class="btn btn-secondary" style="margin-bottom:10px" id="svc-import">Загрузить данные</button>
-      <button type="button" class="btn btn-secondary" style="margin-bottom:10px" id="svc-xlsx-import">Импорт клиентов из Excel</button>
-      <button type="button" class="btn btn-secondary" id="svc-xlsx-template">Скачать шаблон Excel</button>
-      <p class="muted" style="font-size:0.8rem;margin-top:12px;margin-bottom:0">
-        При загрузке JSON база целиком заменится — перед этим лучше выгрузить резервную копию. Импорт Excel только добавляет клиентов.
-      </p>
+    <div class="card svc-data-card">
+      ${htmlDataBackupCard(
+        `<p class="svc-data-footnote">При загрузке файла все данные заменятся — сначала сохраните копию. Импорт клиентов (имя и телефон) только добавляет записи в справочник.</p>`
+      )}
     </div>
   </div>`;
 }
@@ -2185,6 +2195,8 @@ async function renderWizard(root, db, go) {
           materialsFact: null,
           receivedRub: null,
           actualMinutes: null,
+          actualStartAt: null,
+          actualEndAt: null,
           materialCostRub: null,
           profitRub: null,
           completedAt: null,
