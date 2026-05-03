@@ -22,6 +22,25 @@ export function formatDateISO(iso) {
   return `${d}.${m}.${y}`;
 }
 
+/**
+ * Разбор даты из строки ДД.ММ.ГГГГ (допускаются однозначные день/месяц).
+ * Возвращает YYYY-MM-DD или null.
+ */
+export function parseDateRu(s) {
+  const t = String(s ?? '').trim();
+  const m = /^(\d{1,2})\.(\d{1,2})\.(\d{4})$/.exec(t);
+  if (!m) return null;
+  const d = Number(m[1]);
+  const mo = Number(m[2]);
+  const y = Number(m[3]);
+  if (!Number.isFinite(y) || y < 1000 || y > 9999) return null;
+  if (!Number.isFinite(mo) || mo < 1 || mo > 12) return null;
+  if (!Number.isFinite(d) || d < 1) return null;
+  const last = new Date(y, mo, 0).getDate();
+  if (d > last) return null;
+  return `${y}-${String(mo).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+}
+
 /** «HH:MM» для времени записи («10:00» или полный строковый вид, 24 ч) */
 export function clockHHMM(t) {
   if (!t || typeof t !== 'string') return '—';

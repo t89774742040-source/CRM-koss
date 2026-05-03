@@ -22,6 +22,25 @@ function toast(msg) {
   }, 2800);
 }
 
+function htmlDemoTelegramHint(opts = {}) {
+  const center = opts.centered ? 'text-align:center;' : '';
+  return `<p class="muted" style="margin-top:10px;margin-bottom:14px;font-size:0.85rem;line-height:1.45;${center}">
+    Чтобы получить код полного доступа, напишите в Telegram:
+    <a href="https://t.me/tnatalina" target="_blank" rel="noopener noreferrer">@tnatalina</a>
+  </p>`;
+}
+
+async function downloadDbBackupJson(db) {
+  const data = await db.exportAll();
+  const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `kosopletenie-crm-backup-${F.todayISO()}.json`;
+  a.click();
+  URL.revokeObjectURL(a.href);
+  toast('Файл скачан');
+}
+
 /**
  * Подтверждение в модальном слое. Во встроенных превью (Simple Browser) `window.confirm` часто
  * отключён или сразу возвращает true — тогда запись «удалялась» без вопроса.
@@ -227,6 +246,24 @@ function monthRange(ym) {
   return { from, to };
 }
 
+function isIsoYearMonth(v) {
+  const s = String(v || '');
+  if (!/^\d{4}-\d{2}$/.test(s)) return false;
+  const mo = Number(s.slice(5, 7));
+  return mo >= 1 && mo <= 12;
+}
+
+function formatMonthYearRu(ym) {
+  if (!isIsoYearMonth(ym)) return '—';
+  const [y, mo] = ym.split('-').map(Number);
+  const d = new Date(y, mo - 1, 1);
+  const monthName = new Intl.DateTimeFormat('ru-RU', { month: 'long' }).format(
+    d
+  );
+  const cap = monthName.charAt(0).toUpperCase() + monthName.slice(1);
+  return `${cap} ${y}`;
+}
+
 export async function mount(shell, ctx) {
   const { db, meta, route, go, refresh } = ctx;
   const parsed = parseRoute(route);
@@ -300,15 +337,37 @@ function renderOnboarding() {
   return `<div class="ob-root">
     <div style="font-size:3rem;margin-bottom:8px" aria-hidden="true">🪢</div>
     <h1>Косоплетение CRM</h1>
-    <p>Бесплатный демо-доступ на 3 дня. Записи, материалы и прибыль — в одном месте, с телефона.</p>
+    <p>Бесплатное демо на 3 дня с момента запуска. Записи, материалы и прибыль — в одном месте, с телефона.</p>
     <button type="button" class="btn btn-primary" id="ob-start">Начать демо</button>
+    <div class="ob-pwa-hint">
+      <p class="muted ob-pwa-hint__lead">Можно установить CRM на экран телефона, чтобы ссылка не потерялась.</p>
+      <button type="button" class="btn btn-ghost ob-pwa-toggle" id="ob-pwa-toggle" aria-expanded="false" aria-controls="ob-pwa-detail">Как установить?</button>
+      <div id="ob-pwa-detail" class="ob-pwa-detail" hidden>
+        <div class="ob-pwa-detail__inner muted">
+          <p class="ob-pwa-detail__title">Как установить на телефон</p>
+          <p><strong>Android:</strong> Откройте меню браузера ⋮ и выберите «Добавить на главный экран» или «Установить приложение».</p>
+          <p><strong>iPhone:</strong> Откройте ссылку в Safari, нажмите «Поделиться» и выберите «На экран Домой».</p>
+          <p class="ob-pwa-detail__foot">После этого CRM появится на экране телефона как обычное приложение.</p>
+        </div>
+      </div>
+    </div>
     <p class="muted" style="margin-top:20px">Уже есть код?</p>
-    <input type="text" class="field" id="ob-code" placeholder="Код активации" autocomplete="off" />
+    <input type="text" class="field" id="ob-code" placeholder="Код доступа" autocomplete="off" />
     <button type="button" class="btn btn-secondary" id="ob-activate">Активировать</button>
   </div>`;
 }
 
 export function attachOnboarding(shell, db, go, refresh) {
+  const pwaToggle = shell.querySelector('#ob-pwa-toggle');
+  const pwaDetail = shell.querySelector('#ob-pwa-detail');
+  if (pwaToggle && pwaDetail) {
+    pwaToggle.addEventListener('click', () => {
+      const open = pwaDetail.hidden;
+      pwaDetail.hidden = !open;
+      pwaToggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+      pwaToggle.textContent = open ? 'Скрыть' : 'Как установить?';
+    });
+  }
   const start = shell.querySelector('#ob-start');
   const act = shell.querySelector('#ob-activate');
   const code = shell.querySelector('#ob-code');
@@ -323,7 +382,7 @@ export function attachOnboarding(shell, db, go, refresh) {
     act.onclick = async () => {
       const ok = await License.activateWithCode(db, code.value);
       if (!ok) {
-        toast('Код не подходит');
+        toast('Неверный код доступа');
         return;
       }
       await refresh();
@@ -335,11 +394,13 @@ export function attachOnboarding(shell, db, go, refresh) {
 
 function renderLock() {
   return `<div class="lock-screen">
-    <h1 style="text-align:center">Демо закончилось</h1>
-    <p class="muted" style="text-align:center">Введите код активации, чтобы продолжить. Данные в телефоне сохраняются.</p>
-    <label class="label" for="lk-code">Код активации</label>
-    <input class="field" id="lk-code" placeholder="Например: KOSO-FULL-2026" />
-    <button type="button" class="btn btn-primary" id="lk-btn">Активировать</button>
+    <h1 style="text-align:center">Демо-период закончился</h1>
+    <p class="muted" style="text-align:center;margin-top:14px;line-height:1.45">Чтобы продолжить работу, введите код доступа. Ваши данные сохранены на устройстве.</p>
+    ${htmlDemoTelegramHint({ centered: true })}
+    <label class="label" for="lk-code" style="margin-top:14px">Код доступа</label>
+    <input class="field" id="lk-code" placeholder="Например: KOSO-FULL-2026" autocomplete="off" />
+    <button type="button" class="btn btn-primary" id="lk-btn" style="width:100%;margin-top:10px">Активировать</button>
+    <button type="button" class="btn btn-secondary" id="lk-export" style="width:100%;margin-top:10px">Выгрузить данные</button>
   </div>`;
 }
 
@@ -350,13 +411,21 @@ export function attachLock(shell, db, go, refresh) {
     btn.onclick = async () => {
       const ok = await License.activateWithCode(db, code.value);
       if (!ok) {
-        toast('Код не подходит');
+        toast('Неверный код доступа');
         return;
       }
       await refresh();
       go('today');
     };
   }
+  shell.querySelector('#lk-export')?.addEventListener('click', async () => {
+    try {
+      await downloadDbBackupJson(db);
+    } catch (e) {
+      console.error(e);
+      toast('Не удалось выгрузить данные');
+    }
+  });
 }
 
 async function renderToday(db, meta, go) {
@@ -475,7 +544,17 @@ async function renderToday(db, meta, go) {
     </div>
     <button type="button" class="icon-btn" id="open-settings" aria-label="Настройки">⚙️</button>
   </header>
-  ${trialLeft != null ? `<div class="trial-pill">Демо: осталось ${trialLeft} дн.</div>` : ''}
+  ${
+    trialLeft != null
+      ? `<div class="trial-pill trial-pill--active-demo" style="display:block;white-space:normal;line-height:1.35;text-align:center">
+    Демо-версия: осталось ${trialLeft} дн.
+    <div class="trial-pill__telegram" style="margin-top:5px;font-size:0.78rem;font-weight:500;line-height:1.4;opacity:0.95">
+      Хотите оставить CRM себе? Напишите в Telegram:
+      <a href="https://t.me/tnatalina" target="_blank" rel="noopener noreferrer" style="color:inherit;text-decoration:underline;text-underline-offset:2px">@tnatalina</a>
+    </div>
+  </div>`
+      : ''
+  }
   <div class="content">
     <div class="card">
       <div class="card-title">Сегодня</div>
@@ -605,14 +684,12 @@ function attachServiceBlock(root, db, go, refresh) {
   });
 
   root.querySelector('#svc-export')?.addEventListener('click', async () => {
-    const data = await db.exportAll();
-    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(blob);
-    a.download = `kosopletenie-crm-backup-${F.todayISO()}.json`;
-    a.click();
-    URL.revokeObjectURL(a.href);
-    toast('Файл скачан');
+    try {
+      await downloadDbBackupJson(db);
+    } catch (e) {
+      console.error(e);
+      toast('Не удалось выгрузить данные');
+    }
   });
 
   root.querySelector('#svc-import')?.addEventListener('click', () => {
@@ -943,9 +1020,10 @@ async function renderMaterials(db, go) {
   </header>
   <div class="content">
     <div class="row" style="margin-bottom:12px">
-      <button type="button" class="btn btn-secondary" id="btn-purchase">＋ Приход</button>
-      <button type="button" class="btn btn-secondary" id="btn-add-mat">＋ Материал</button>
+      <button type="button" class="btn btn-secondary" id="btn-purchase">＋ Пополнить склад</button>
+      <button type="button" class="btn btn-secondary" id="btn-add-mat">＋ Создать материал</button>
     </div>
+    <p class="muted" style="margin:-4px 0 14px;font-size:0.88rem;line-height:1.45">Пополнить склад — если вы купили материал и хотите добавить остаток.<br>Создать материал — если нужно заранее добавить позицию без закупки.</p>
     <button type="button" class="btn btn-secondary" id="btn-cleanup-test-mat">Очистить тестовые материалы</button>
     <div class="list-gap">${html}</div>
   </div>`;
@@ -1025,7 +1103,7 @@ async function renderMaterialDetail(db, id, go) {
       }
       ${mat.comment ? `<div class="status-line">Комментарий: ${esc(mat.comment)}</div>` : ''}
     </div>
-    <button type="button" class="btn btn-primary" id="md-purchase">＋ Приход</button>
+    <button type="button" class="btn btn-primary" id="md-purchase">＋ Пополнить склад</button>
   </div>`;
 }
 
@@ -1115,8 +1193,8 @@ async function renderPurchase(db, go) {
   ).join('');
   return `<div class="content" id="pm-page-root" data-pm-has-mats="${hasMaterials ? '1' : '0'}">
     <div class="back-row"><a href="#materials" data-back>← Материалы</a></div>
-    <h1 style="margin:0 0 16px;font-size:1.35rem">Приход материала</h1>
-    <p class="muted" style="margin:-4px 0 12px">Приход вводится пачками/упаковками. На склад и в списание идут граммы или штуки.</p>
+    <h1 style="margin:0 0 16px;font-size:1.35rem">Пополнение склада</h1>
+    <p class="muted" style="margin:-4px 0 12px;line-height:1.45">Добавьте закупку материала на склад. Можно выбрать материал из списка или сразу создать новый.</p>
     ${
       hasMaterials
         ? `<div class="card compact pm-mode-card" id="pm-mode-wrap">
@@ -1624,16 +1702,27 @@ async function renderFinance(db, go) {
   const today = F.todayISO();
   const curYm = today.slice(0, 7);
 
+  const isIsoDate = (v) => /^\d{4}-\d{2}-\d{2}$/.test(String(v || ''));
+
+  let selectedYm = curYm;
   let from = today;
   let to = today;
   if (mode === 'month') {
-    const r = monthRange(curYm);
+    const ymParam = params.get('ym');
+    selectedYm = isIsoYearMonth(ymParam) ? ymParam : curYm;
+    const r = monthRange(selectedYm);
     from = r.from;
     to = r.to;
-  }
-  if (mode === 'period') {
-    from = params.get('from') || today;
-    to = params.get('to') || today;
+  } else if (mode === 'period') {
+    const fromParam = params.get('from');
+    const toParam = params.get('to');
+    from = isIsoDate(fromParam) ? fromParam : today;
+    to = isIsoDate(toParam) ? toParam : today;
+    if (from > to) {
+      const tmp = from;
+      from = to;
+      to = tmp;
+    }
   }
 
   const appointments = await db.listAppointments();
@@ -1649,7 +1738,9 @@ async function renderFinance(db, go) {
   const purchases = movements.filter((m) => m.type === 'in' && inRange(m.date, from, to));
   const purchaseSum = purchases.reduce((s, m) => s + (Number(m.totalCostRub) || 0), 0);
 
+  const doneVisits = apIn.length;
   const clientsN = new Set(apIn.map((a) => a.clientId)).size;
+  const avgCheck = doneVisits > 0 ? revenue / doneVisits : 0;
   const hours = apIn.reduce((s, a) => s + (Number(a.actualMinutes) || 0), 0) / 60;
   const profitPerHour = hours > 0 ? profit / hours : 0;
 
@@ -1657,7 +1748,7 @@ async function renderFinance(db, go) {
     mode === 'today'
       ? F.formatDateISO(today)
       : mode === 'month'
-        ? `Месяц ${curYm}`
+        ? formatMonthYearRu(selectedYm)
         : `${F.formatDateISO(from)} — ${F.formatDateISO(to)}`;
 
   const segHtml = `<div class="segmented" style="margin-top:0">
@@ -1666,11 +1757,18 @@ async function renderFinance(db, go) {
     <button type="button" class="${mode === 'period' ? 'active' : ''}" data-fin="period">Период</button>
   </div>`;
 
+  const monthInputs =
+    mode === 'month'
+      ? `<label class="label" for="fin-ym">Месяц</label>
+    <input class="field" id="fin-ym" type="month" value="${esc(selectedYm)}" />
+    <button type="button" class="btn btn-secondary" id="fin-apply-month">Показать</button>`
+      : '';
+
   const periodInputs =
     mode === 'period'
       ? `<div class="row">
-      <div style="flex:1"><label class="label" for="fin-from">С</label><input class="field" id="fin-from" type="date" value="${from}" /></div>
-      <div style="flex:1"><label class="label" for="fin-to">По</label><input class="field" id="fin-to" type="date" value="${to}" /></div>
+      <div style="flex:1"><label class="label" for="fin-from">С</label><input class="field" id="fin-from" type="text" inputmode="numeric" autocomplete="off" placeholder="ДД.ММ.ГГГГ" maxlength="10" spellcheck="false" value="${esc(F.formatDateISO(from))}" /></div>
+      <div style="flex:1"><label class="label" for="fin-to">По</label><input class="field" id="fin-to" type="text" inputmode="numeric" autocomplete="off" placeholder="ДД.ММ.ГГГГ" maxlength="10" spellcheck="false" value="${esc(F.formatDateISO(to))}" /></div>
     </div>
     <button type="button" class="btn btn-secondary" id="fin-apply">Показать</button>`
       : '';
@@ -1680,13 +1778,14 @@ async function renderFinance(db, go) {
   </header>
   <div class="content">
     ${segHtml}
+    ${monthInputs}
     ${periodInputs}
     <div class="card">
       <div class="card-title">Выручка</div>
       <p class="stat-big">${F.money(revenue)}</p>
     </div>
     <div class="card">
-      <div class="card-title">Себестоимость (визиты)</div>
+      <div class="card-title">Себестоимость выполненных визитов</div>
       <p class="stat-big">${F.money(cogs)}</p>
     </div>
     <div class="card">
@@ -1694,14 +1793,16 @@ async function renderFinance(db, go) {
       <p class="stat-big profit-pos">${F.money(profit)}</p>
     </div>
     <div class="card">
-      <div class="card-title">Закупки за период</div>
+      <div class="card-title">Закупки материалов</div>
       <p class="stat-big">${F.money(purchaseSum)}</p>
-      <p class="status-line">Сумма приходов на склад (не то же, что списание по визитам).</p>
+      <p class="status-line">Это покупки материалов на склад. Они не равны расходу материалов по визитам.</p>
     </div>
     <div class="card compact">
       <div class="card-title">Кратко</div>
+      <p class="status-line">Завершённых визитов: ${doneVisits}</p>
       <p class="status-line">Уникальных клиентов: ${clientsN}</p>
-      <p class="status-line">Прибыль за час (факт. время): ${F.money(profitPerHour)}</p>
+      <p class="status-line">Средний чек: ${F.money(avgCheck)}</p>
+      <p class="status-line">Прибыль за час работы: ${F.money(profitPerHour)}</p>
     </div>
   </div>`;
 }
@@ -1874,6 +1975,9 @@ export function attachFinance(shell, go) {
     if (m === 'period') {
       const d = F.todayISO();
       location.hash = `#finance?m=period&from=${encodeURIComponent(d)}&to=${encodeURIComponent(d)}`;
+    } else if (m === 'month') {
+      const ym = F.todayISO().slice(0, 7);
+      location.hash = `#finance?m=month&ym=${encodeURIComponent(ym)}`;
     } else {
       location.hash = `#finance?m=${encodeURIComponent(m)}`;
     }
@@ -1882,10 +1986,55 @@ export function attachFinance(shell, go) {
     b.addEventListener('click', () => navigateMode(b.getAttribute('data-fin')));
   });
   root.querySelector('#fin-apply')?.addEventListener('click', () => {
-    const from = root.querySelector('#fin-from').value;
-    const to = root.querySelector('#fin-to').value;
+    const fromIso = F.parseDateRu(root.querySelector('#fin-from')?.value);
+    const toIso = F.parseDateRu(root.querySelector('#fin-to')?.value);
+    if (!fromIso || !toIso) {
+      toast('Укажите даты в формате ДД.ММ.ГГГГ');
+      return;
+    }
+    let from = fromIso;
+    let to = toIso;
+    if (from > to) {
+      const tmp = from;
+      from = to;
+      to = tmp;
+    }
     location.hash = `#finance?m=period&from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`;
   });
+  root.querySelector('#fin-apply-month')?.addEventListener('click', () => {
+    const ym = root.querySelector('#fin-ym')?.value;
+    if (!isIsoYearMonth(ym)) {
+      toast('Укажите месяц');
+      return;
+    }
+    location.hash = `#finance?m=month&ym=${encodeURIComponent(ym)}`;
+  });
+
+  const subEl = root.querySelector('.page-header .sub');
+  const finFromEl = root.querySelector('#fin-from');
+  const finToEl = root.querySelector('#fin-to');
+  const normalizeFinDateField = (el) => {
+    const iso = F.parseDateRu(el?.value);
+    if (iso) el.value = F.formatDateISO(iso);
+  };
+  const syncPeriodSubLabel = () => {
+    if (!subEl || !finFromEl || !finToEl) return;
+    const fromIso = F.parseDateRu(finFromEl.value);
+    const toIso = F.parseDateRu(finToEl.value);
+    if (!fromIso || !toIso) return;
+    let from = fromIso;
+    let to = toIso;
+    if (from > to) {
+      const tmp = from;
+      from = to;
+      to = tmp;
+    }
+    subEl.textContent = `${F.formatDateISO(from)} — ${F.formatDateISO(to)}`;
+  };
+  finFromEl?.addEventListener('input', syncPeriodSubLabel);
+  finToEl?.addEventListener('input', syncPeriodSubLabel);
+  finFromEl?.addEventListener('blur', () => normalizeFinDateField(finFromEl));
+  finToEl?.addEventListener('blur', () => normalizeFinDateField(finToEl));
 }
 
 async function renderSettings(db, meta, go, refresh) {
@@ -1916,6 +2065,10 @@ async function renderSettings(db, meta, go, refresh) {
     <hr class="soft" />
     <p class="muted" style="font-size:0.85rem">${esc(codesHint)}</p>
     <label class="label" for="st-code">Активация</label>
+    <p class="muted" style="font-size:0.82rem;margin:4px 0 8px;line-height:1.45">
+      Код доступа можно получить в Telegram:
+      <a href="https://t.me/tnatalina" target="_blank" rel="noopener noreferrer">@tnatalina</a>
+    </p>
     <input class="field" id="st-code" placeholder="Код полной версии" />
     <button type="button" class="btn btn-secondary" id="st-activate">Активировать код</button>
     <hr class="soft" />
@@ -1949,7 +2102,7 @@ export function attachSettings(shell, db, go, refresh) {
   root.querySelector('#st-activate')?.addEventListener('click', async () => {
     const ok = await License.activateWithCode(db, root.querySelector('#st-code').value);
     if (!ok) {
-      toast('Код не подходит');
+      toast('Неверный код доступа');
       return;
     }
     toast('Полная версия активирована');
