@@ -64,6 +64,23 @@ export function hourMinuteToHHMM(hours, minutes) {
   return `${String(h).padStart(2, '0')}:${String(mi).padStart(2, '0')}`;
 }
 
+/**
+ * Дефолт времени новой записи по дате: не сегодня — 10:00; сегодня — текущее локальное время,
+ * округлённое вверх до слота 00 / 15 / 30 / 45 (как в селектах мастера).
+ */
+export function defaultNewAppointmentTimeHHMM(dateISO) {
+  const day = String(dateISO || '').split('T')[0].trim();
+  if (!day || day !== todayISO()) return '10:00';
+  const now = new Date();
+  const totalMin = now.getHours() * 60 + now.getMinutes();
+  const rem = totalMin % 15;
+  let ceilMin = rem === 0 ? totalMin : totalMin + (15 - rem);
+  if (ceilMin >= 24 * 60) ceilMin = 23 * 60 + 45;
+  const h = Math.floor(ceilMin / 60);
+  const m = ceilMin % 60;
+  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+}
+
 /** Минуты от полуночи для сравнения расписания (строка «HH:MM») */
 export function timeHHMMToMinutes(t) {
   if (!t || typeof t !== 'string') return null;
@@ -96,6 +113,37 @@ export function appointmentWindowMs(dateISO, timeStr, plannedMinutes) {
   ).getTime();
   const endMs = startMs + dur * 60 * 1000;
   return { startMs, endMs };
+}
+
+/** Дата строкой YYYY-MM-DD (без времени). */
+function dateKey(iso) {
+  return String(iso ?? '').split('T')[0].trim();
+}
+
+/**
+ * Если дата записи — сегодня (локально), вернуть true, если момент начала по времени уже раньше «сейчас».
+ * Для будущих календарных дат всегда false.
+ */
+export function isAppointmentStartInPastToday(dateISO, timeStr, nowMs = Date.now()) {
+  const day = dateKey(dateISO);
+  if (!day || day !== todayISO()) return false;
+  const w = appointmentWindowMs(dateISO, timeStr, 0);
+  if (!w) return false;
+  return w.startMs < nowMs;
+}
+
+/**
+ * Пересечение интервалов [start, end) двух записей на одну календарную дату.
+ * Поля записи: date, time, plannedMinutes (как в IndexedDB).
+ */
+export function appointmentTimesOverlapSameDay(apA, apB) {
+  const da = dateKey(apA?.date);
+  const db = dateKey(apB?.date);
+  if (!da || !db || da !== db) return false;
+  const wa = appointmentWindowMs(apA.date, apA.time, apA.plannedMinutes);
+  const wb = appointmentWindowMs(apB.date, apB.time, apB.plannedMinutes);
+  if (!wa || !wb) return false;
+  return wa.startMs < wb.endMs && wb.startMs < wa.endMs;
 }
 
 /**

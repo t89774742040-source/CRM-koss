@@ -140,7 +140,14 @@ function createApi(db) {
 
   async function setMeta(key, value) {
     const tx = db.transaction('meta', 'readwrite');
-    tx.objectStore('meta').put({ key, value });
+    const store = tx.objectStore('meta');
+    await promisify(store.put({ key, value }));
+    await txDone(tx);
+  }
+
+  async function deleteMeta(key) {
+    const tx = db.transaction('meta', 'readwrite');
+    await promisify(tx.objectStore('meta').delete(key));
     await txDone(tx);
   }
 
@@ -219,6 +226,31 @@ function createApi(db) {
     return row.id;
   }
 
+  /** Обновляет существующего клиента по id; остальные поля (telegram, createdAt, isDemo) сохраняются. */
+  async function updateClient(clientId, data) {
+    const id = Number(clientId);
+    const prev = await getClient(id);
+    if (!prev) throw new Error('Клиент не найден');
+    const row = {
+      ...prev,
+      id,
+      name: data.name != null ? String(data.name) : prev.name,
+      phone: data.phone != null ? String(data.phone) : prev.phone,
+      notes: data.notes != null ? String(data.notes) : prev.notes,
+    };
+    await putClient(row);
+    return id;
+  }
+
+  async function deleteClient(clientId) {
+    const id = Number(clientId);
+    const prev = await getClient(id);
+    if (!prev) throw new Error('Клиент не найден');
+    const tx = db.transaction('clients', 'readwrite');
+    tx.objectStore('clients').delete(id);
+    await txDone(tx);
+  }
+
   async function addClient(data) {
     const row = {
       name: data.name || '',
@@ -227,6 +259,7 @@ function createApi(db) {
       notes: data.notes || '',
       createdAt: Date.now(),
     };
+    if (data.isDemo === true) row.isDemo = true;
     const tx = db.transaction('clients', 'readwrite');
     const id = await promisify(tx.objectStore('clients').add(row));
     await txDone(tx);
@@ -308,14 +341,28 @@ function createApi(db) {
     ].map(normalizeDemoServiceName)
   );
 
-  /** Удалить или архивировать услуги с «тестовыми» названиями из старого сида. */
+  /**
+   * Демо-услуга для очистки из прайса: флаг isDemo, префикс «Демо…» в названии
+   * (в т.ч. «Демо ·», «Демо -») или старые тестовые имена из сида.
+   */
+  function isDemoServiceForPurge(s) {
+    if (!s) return false;
+    if (s.isDemo === true) return true;
+    const raw = String(s.name ?? '');
+    const t = raw.trim();
+    if (t.startsWith('Демо')) return true;
+    if (DEMO_SEED_SERVICE_NAMES.has(normalizeDemoServiceName(raw))) return true;
+    return false;
+  }
+
+  /** Удалить или архивировать демо-услуги (не ломая записи с serviceId). */
   async function purgeDemoSeedServices() {
     const all = await listServices({ includeInactive: true });
     let deleted = 0;
     let archived = 0;
     const seenIds = new Set();
     for (const s of all) {
-      if (!DEMO_SEED_SERVICE_NAMES.has(normalizeDemoServiceName(s.name))) continue;
+      if (!isDemoServiceForPurge(s)) continue;
       if (seenIds.has(s.id)) continue;
       seenIds.add(s.id);
       const r = await deleteServiceOrArchive(s.id);
@@ -337,6 +384,7 @@ function createApi(db) {
       note: data.note || '',
       isActive: true,
     };
+    if (data.isDemo === true) row.isDemo = true;
     const tx = db.transaction('services', 'readwrite');
     const id = await promisify(tx.objectStore('services').add(row));
     await txDone(tx);
@@ -374,6 +422,8 @@ function createApi(db) {
     const packageSize = unitCode === 'pcs' ? packageQtyPcs : packageWeightGrams;
     const computedGramPrice =
       packageSize > 0 ? packagePrice / packageSize : 0;
+    const seriesStore = String(data.materialSeries ?? '').trim();
+    const colorStore = String(data.materialColorCode ?? '').trim();
     const row = {
       name: data.name || '',
       materialType: data.materialType || 'прочее',
@@ -388,7 +438,10 @@ function createApi(db) {
       minStock: Number(data.minStock) || 0,
       comment: data.comment || '',
       isActive: true,
+      materialSeries: seriesStore,
+      materialColorCode: colorStore,
     };
+    if (data.isDemo === true) row.isDemo = true;
     const tx = db.transaction('materials', 'readwrite');
     const id = await promisify(tx.objectStore('materials').add(row));
     await txDone(tx);
@@ -413,6 +466,15 @@ function createApi(db) {
     normalizeAppointmentStatus(row);
     const tx = db.transaction('appointments', 'readwrite');
     tx.objectStore('appointments').put(row);
+    await txDone(tx);
+  }
+
+  /** Удаляет только запись из IndexedDB; клиенты, услуги, материалы и движения склада не трогает. */
+  async function deleteAppointment(appointmentId) {
+    const id = Number(appointmentId);
+    if (!id) throw new Error('Неверный id');
+    const tx = db.transaction('appointments', 'readwrite');
+    await promisify(tx.objectStore('appointments').delete(id));
     await txDone(tx);
   }
 
@@ -591,7 +653,18 @@ function createApi(db) {
     ap.actualMinutes = data.actualMinutes != null ? Number(data.actualMinutes) : ap.plannedMinutes;
     ap.materialsFact = lines;
     ap.receivedRub = Math.max(0, Number(data.receivedRub) || 0);
-    ap.materialCostRub = Math.max(0, Number(data.materialCostRub) || 0);
+    const matOnly = Math.max(
+      0,
+      Number(data.materialCostRub ?? data.materialsCostRub) || 0
+    );
+    ap.materialCostRub = matOnly;
+    ap.laborCostRub = Math.max(0, Number(data.laborCostRub) || 0);
+    ap.orderFixedCostRub = Math.max(0, Number(data.orderFixedCostRub) || 0);
+    const tcIn = Number(data.totalCogsRub);
+    ap.totalCogsRub =
+      Number.isFinite(tcIn) && tcIn >= 0
+        ? tcIn
+        : matOnly + ap.laborCostRub + ap.orderFixedCostRub;
     ap.profitRub = Number(data.profitRub) || 0;
     ap.completedAt = new Date().toISOString();
     const movementsSnapshot = await listMovements();
@@ -625,14 +698,165 @@ function createApi(db) {
 
   /** Ключ meta: одноразовая загрузка тестового набора (клиенты, прайс, склад, записи). */
   const DEMO_PACK_META_KEY = 'demoPackLoadedV1';
+  /** Старый/опечаточный вариант имени ключа — сбрасываем при удалении демо, чтобы кнопка снова работала. */
+  const DEMO_PACK_META_KEY_ALT = 'demoPackageLoadedV1';
+
+  /** Только имена из loadDemoPack — для удаления без затрагивания пользовательских данных. */
+  const PACK_DEMO_LEGACY_CLIENT_NAMES = new Set([
+    'Демо · Анна Петрова',
+    'Демо · Мария Соколова',
+    'Демо · Елена Волкова',
+  ]);
+  const PACK_DEMO_LEGACY_SERVICE_NAMES = new Set([
+    'Демо · Косы-коробочки',
+    'Демо · Брейды классика',
+  ]);
+  const PACK_DEMO_LEGACY_MATERIAL_NAMES = new Set([
+    'Демо · Канекалон Premium',
+    'Демо · Резинки набор',
+  ]);
+
+  function isPackDemoClient(c) {
+    return !!(
+      c &&
+      (c.isDemo === true || PACK_DEMO_LEGACY_CLIENT_NAMES.has(String(c.name || '').trim()))
+    );
+  }
+
+  function isPackDemoService(s) {
+    return !!(
+      s &&
+      (s.isDemo === true || PACK_DEMO_LEGACY_SERVICE_NAMES.has(String(s.name || '').trim()))
+    );
+  }
+
+  function isPackDemoMaterial(m) {
+    return !!(
+      m &&
+      (m.isDemo === true || PACK_DEMO_LEGACY_MATERIAL_NAMES.has(String(m.name || '').trim()))
+    );
+  }
+
+  function isPackDemoAppointment(a, demoClientIds) {
+    if (!a) return false;
+    if (a.isDemo === true) return true;
+    const cid = Number(a.clientId);
+    return Number.isFinite(cid) && cid > 0 && demoClientIds.has(cid);
+  }
+
+  /**
+   * Удаляет только демо-набор из loadDemoPack (по isDemo и/или фиксированным именам).
+   * После успешного удаления сбрасывает флаги демо-пакета в meta (отдельная транзакция, с await delete).
+   */
+  async function purgeDemoPackData() {
+    const [clients, services, materials, appointments, movements] = await Promise.all([
+      listClients(),
+      listServices({ includeInactive: true }),
+      listMaterials({ includeInactive: true }),
+      listAppointments(),
+      listMovements(),
+    ]);
+
+    const demoClientIds = new Set();
+    for (const c of clients) {
+      if (isPackDemoClient(c)) demoClientIds.add(Number(c.id));
+    }
+    const demoServiceIds = new Set();
+    for (const s of services) {
+      if (isPackDemoService(s)) demoServiceIds.add(Number(s.id));
+    }
+    const demoMaterialIds = new Set();
+    for (const m of materials) {
+      if (isPackDemoMaterial(m)) demoMaterialIds.add(Number(m.id));
+    }
+
+    const demoApptIds = new Set();
+    for (const a of appointments) {
+      const aid = Number(a.id);
+      if (!Number.isFinite(aid) || aid <= 0) continue;
+      if (isPackDemoAppointment(a, demoClientIds)) demoApptIds.add(aid);
+    }
+
+    const movementIdsToDelete = new Set();
+    for (const mv of movements) {
+      const mid = mv.materialId != null ? Number(mv.materialId) : NaN;
+      const outAid = mv.appointmentId != null ? Number(mv.appointmentId) : NaN;
+      if (Number.isFinite(mid) && mid > 0 && demoMaterialIds.has(mid)) {
+        movementIdsToDelete.add(mv.id);
+        continue;
+      }
+      if (Number.isFinite(outAid) && outAid > 0 && demoApptIds.has(outAid)) {
+        movementIdsToDelete.add(mv.id);
+      }
+    }
+
+    const tx = db.transaction(
+      ['stockMovements', 'appointments', 'materials', 'services', 'clients'],
+      'readwrite'
+    );
+    const movStore = tx.objectStore('stockMovements');
+    const apStore = tx.objectStore('appointments');
+    const matStore = tx.objectStore('materials');
+    const svcStore = tx.objectStore('services');
+    const clStore = tx.objectStore('clients');
+
+    for (const id of movementIdsToDelete) movStore.delete(id);
+    for (const id of demoApptIds) apStore.delete(id);
+    for (const id of demoMaterialIds) matStore.delete(id);
+    for (const id of demoServiceIds) svcStore.delete(id);
+    for (const id of demoClientIds) clStore.delete(id);
+
+    await txDone(tx);
+    await deleteMeta(DEMO_PACK_META_KEY);
+    await deleteMeta(DEMO_PACK_META_KEY_ALT);
+    return { ok: true };
+  }
+
+  /** Нормализация «HH:MM» для сравнения слотов демо-пакета. */
+  function normHHMM(t) {
+    if (!t || typeof t !== 'string') return '';
+    const m = /^(\d{1,2}):(\d{2})/.exec(t.trim());
+    if (!m) return '';
+    const h = Math.min(23, Math.max(0, parseInt(m[1], 10) || 0));
+    const mi = Math.min(59, Math.max(0, parseInt(m[2], 10) || 0));
+    return `${String(h).padStart(2, '0')}:${String(mi).padStart(2, '0')}`;
+  }
 
   /**
    * Добавляет тестовых клиентов, услуги, материалы, приход на склад и 3 записи.
-   * Не дублирует, если ранее уже выставлен флаг demoPackLoadedV1.
+   * Идемпотентно по справочнику и по слотам (дата+время+клиент демо-пакета).
+   * «Уже загружено» только если все три слота заняты; иначе недостающие записи добавляются (в т.ч. после ручного удаления).
    */
   async function loadDemoPack() {
-    if (await getMeta(DEMO_PACK_META_KEY)) {
-      return { ok: false, reason: 'already_loaded' };
+    async function ensureDemoClient(data) {
+      const all = await listClients();
+      const hit = all.find((c) => String(c.name || '').trim() === String(data.name || '').trim());
+      if (hit) return hit.id;
+      return addClient(data);
+    }
+
+    async function ensureDemoService(data) {
+      const all = await listServices({ includeInactive: true });
+      const hit = all.find((s) => String(s.name || '').trim() === String(data.name || '').trim());
+      if (hit) return hit.id;
+      return addService(data);
+    }
+
+    async function ensureDemoMaterial(data) {
+      const all = await listMaterials({ includeInactive: true });
+      const hit = all.find((m) => String(m.name || '').trim() === String(data.name || '').trim());
+      if (hit) return hit.id;
+      return addMaterial(data);
+    }
+
+    async function maybeDemoInboundPurchase(materialId, purchaseFields) {
+      const movements = await listMovements();
+      const mid = Number(materialId);
+      const hadInbound = movements.some(
+        (mv) => mv.type === 'in' && Number(mv.materialId) === mid
+      );
+      if (hadInbound) return;
+      await stockPurchase({ materialId: mid, ...purchaseFields });
     }
 
     function isoToday() {
@@ -655,45 +879,50 @@ function createApi(db) {
     const today = isoToday();
     const tomorrow = isoAddDays(today, 1);
 
-    const clientId1 = await addClient({
+    const clientId1 = await ensureDemoClient({
       name: 'Демо · Анна Петрова',
       phone: '+7 900 111-01-01',
       telegram: '',
       notes: 'Тестовый клиент',
+      isDemo: true,
     });
-    const clientId2 = await addClient({
+    const clientId2 = await ensureDemoClient({
       name: 'Демо · Мария Соколова',
       phone: '+7 900 222-02-02',
       telegram: '',
       notes: 'Тестовый клиент',
+      isDemo: true,
     });
-    const clientId3 = await addClient({
+    const clientId3 = await ensureDemoClient({
       name: 'Демо · Елена Волкова',
       phone: '+7 900 333-03-03',
       telegram: '',
       notes: 'Тестовый клиент',
+      isDemo: true,
     });
 
     const serviceName1 = 'Демо · Косы-коробочки';
     const serviceName2 = 'Демо · Брейды классика';
-    const sid1 = await addService({
+    const sid1 = await ensureDemoService({
       name: serviceName1,
       basePrice: 4200,
       plannedMinutes: 180,
       defaultDifficulty: 3,
       note: 'Прайс для теста',
+      isDemo: true,
     });
-    const sid2 = await addService({
+    const sid2 = await ensureDemoService({
       name: serviceName2,
       basePrice: 2800,
       plannedMinutes: 120,
       defaultDifficulty: 2,
       note: 'Прайс для теста',
+      isDemo: true,
     });
 
     const matName1 = 'Демо · Канекалон Premium';
     const matName2 = 'Демо · Резинки набор';
-    const mid1 = await addMaterial({
+    const mid1 = await ensureDemoMaterial({
       name: matName1,
       materialType: 'канекалон',
       unit: 'g',
@@ -703,8 +932,9 @@ function createApi(db) {
       stock: 0,
       minStock: 30,
       comment: 'Демо склад',
+      isDemo: true,
     });
-    const mid2 = await addMaterial({
+    const mid2 = await ensureDemoMaterial({
       name: matName2,
       materialType: 'резинки',
       unit: 'pcs',
@@ -714,18 +944,17 @@ function createApi(db) {
       stock: 0,
       minStock: 10,
       comment: 'Демо склад',
+      isDemo: true,
     });
 
-    await stockPurchase({
-      materialId: mid1,
+    await maybeDemoInboundPurchase(mid1, {
       qty: 150,
       unitPrice: 6,
       supplier: 'Демо-поставщик',
       date: today,
       note: 'Партия для теста',
     });
-    await stockPurchase({
-      materialId: mid2,
+    await maybeDemoInboundPurchase(mid2, {
       qty: 40,
       unitPrice: 5,
       supplier: 'Демо-поставщик',
@@ -733,75 +962,125 @@ function createApi(db) {
       note: 'Мелкая фурнитура',
     });
 
-    await addAppointment({
-      clientId: clientId1,
-      serviceId: sid1,
-      serviceNameSnapshot: serviceName1,
-      date: today,
-      time: '10:00',
-      difficulty: 3,
-      difficultyTags: [],
-      plannedMinutes: 180,
-      priceRub: 4200,
-      prepaymentRub: 0,
-      status: 'scheduled',
-      materialsPlan: [],
-      materialsFact: null,
-      receivedRub: null,
-      actualMinutes: null,
-      actualStartAt: null,
-      actualEndAt: null,
-      materialCostRub: null,
-      profitRub: null,
-      completedAt: null,
-      notes: '',
-    });
-    await addAppointment({
-      clientId: clientId2,
-      serviceId: sid2,
-      serviceNameSnapshot: serviceName2,
-      date: today,
-      time: '14:30',
-      difficulty: 2,
-      difficultyTags: [],
-      plannedMinutes: 120,
-      priceRub: 2800,
-      prepaymentRub: 0,
-      status: 'scheduled',
-      materialsPlan: [],
-      materialsFact: null,
-      receivedRub: null,
-      actualMinutes: null,
-      actualStartAt: null,
-      actualEndAt: null,
-      materialCostRub: null,
-      profitRub: null,
-      completedAt: null,
-      notes: '',
-    });
-    await addAppointment({
-      clientId: clientId3,
-      serviceId: sid2,
-      serviceNameSnapshot: serviceName2,
-      date: tomorrow,
-      time: '16:00',
-      difficulty: 2,
-      difficultyTags: [],
-      plannedMinutes: 120,
-      priceRub: 2800,
-      prepaymentRub: 0,
-      status: 'scheduled',
-      materialsPlan: [],
-      materialsFact: null,
-      receivedRub: null,
-      actualMinutes: null,
-      actualStartAt: null,
-      actualEndAt: null,
-      materialCostRub: null,
-      profitRub: null,
-      completedAt: null,
-      notes: '',
-    });
+    let appts = await listAppointments();
+    function slotFilled(cid, dateISO, timeHHMM) {
+      const want = normHHMM(timeHHMM);
+      const d0 = String(dateISO || '').split('T')[0];
+      return appts.some((a) => {
+        if (Number(a.clientId) !== Number(cid)) return false;
+        if (String(a.date || '').split('T')[0] !== d0) return false;
+        return normHHMM(a.time) === want;
+      });
+    }
+
+    const metaLoaded = await getMeta(DEMO_PACK_META_KEY);
+    const metaAltLoaded = await getMeta(DEMO_PACK_META_KEY_ALT);
+    const packComplete =
+      slotFilled(clientId1, today, '10:00') &&
+      slotFilled(clientId2, today, '14:30') &&
+      slotFilled(clientId3, tomorrow, '16:00');
+
+    if ((metaLoaded || metaAltLoaded) && packComplete) {
+      return { ok: false, reason: 'already_loaded' };
+    }
+    if ((metaLoaded || metaAltLoaded) && !packComplete) {
+      await deleteMeta(DEMO_PACK_META_KEY);
+      await deleteMeta(DEMO_PACK_META_KEY_ALT);
+    }
+
+    async function addDemoSlotIfMissing(payload, cid, dateStr, timeStr) {
+      if (slotFilled(cid, dateStr, timeStr)) return;
+      await addAppointment(payload);
+      appts = await listAppointments();
+    }
+
+    await addDemoSlotIfMissing(
+      {
+        clientId: clientId1,
+        serviceId: sid1,
+        serviceNameSnapshot: serviceName1,
+        date: today,
+        time: '10:00',
+        difficulty: 3,
+        difficultyTags: [],
+        plannedMinutes: 180,
+        priceRub: 4200,
+        prepaymentRub: 0,
+        status: 'scheduled',
+        materialsPlan: [],
+        materialsFact: null,
+        receivedRub: null,
+        actualMinutes: null,
+        actualStartAt: null,
+        actualEndAt: null,
+        materialCostRub: null,
+        profitRub: null,
+        completedAt: null,
+        notes: '',
+        isDemo: true,
+      },
+      clientId1,
+      today,
+      '10:00'
+    );
+    await addDemoSlotIfMissing(
+      {
+        clientId: clientId2,
+        serviceId: sid2,
+        serviceNameSnapshot: serviceName2,
+        date: today,
+        time: '14:30',
+        difficulty: 2,
+        difficultyTags: [],
+        plannedMinutes: 120,
+        priceRub: 2800,
+        prepaymentRub: 0,
+        status: 'scheduled',
+        materialsPlan: [],
+        materialsFact: null,
+        receivedRub: null,
+        actualMinutes: null,
+        actualStartAt: null,
+        actualEndAt: null,
+        materialCostRub: null,
+        profitRub: null,
+        completedAt: null,
+        notes: '',
+        isDemo: true,
+      },
+      clientId2,
+      today,
+      '14:30'
+    );
+    await addDemoSlotIfMissing(
+      {
+        clientId: clientId3,
+        serviceId: sid2,
+        serviceNameSnapshot: serviceName2,
+        date: tomorrow,
+        time: '16:00',
+        difficulty: 2,
+        difficultyTags: [],
+        plannedMinutes: 120,
+        priceRub: 2800,
+        prepaymentRub: 0,
+        status: 'scheduled',
+        materialsPlan: [],
+        materialsFact: null,
+        receivedRub: null,
+        actualMinutes: null,
+        actualStartAt: null,
+        actualEndAt: null,
+        materialCostRub: null,
+        profitRub: null,
+        completedAt: null,
+        notes: '',
+        isDemo: true,
+      },
+      clientId3,
+      tomorrow,
+      '16:00'
+    );
 
     await setMeta(DEMO_PACK_META_KEY, true);
     return { ok: true };
@@ -881,12 +1160,15 @@ function createApi(db) {
     raw: db,
     getMeta,
     setMeta,
+    deleteMeta,
     getAllMetaObject,
     seedIfNeeded,
     listClients,
     getClient,
     addClient,
     putClient,
+    updateClient,
+    deleteClient,
     listServices,
     getService,
     addService,
@@ -901,6 +1183,7 @@ function createApi(db) {
     getAppointment,
     addAppointment,
     putAppointment,
+    deleteAppointment,
     startAppointmentNow,
     listMovements,
     addMovement,
@@ -914,6 +1197,7 @@ function createApi(db) {
     exportAll,
     importAll,
     loadDemoPack,
+    purgeDemoPackData,
     deleteOrArchiveMaterial,
     cleanupTestMaterials,
   };

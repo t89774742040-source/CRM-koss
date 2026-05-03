@@ -73,13 +73,13 @@ async function render() {
       attachToday(shell, db, go, refreshMeta);
       break;
     case 'records':
-      attachRecords(shell, db, go);
+      attachRecords(shell, db, go, refreshMeta);
       break;
     case 'clients':
       attachClients(shell, go);
       break;
     case 'client':
-      attachClientDetail(shell, go, p.id);
+      attachClientDetail(shell, db, go, p.id);
       break;
     case 'materials':
       attachMaterials(shell, db, go);

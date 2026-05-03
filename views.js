@@ -22,6 +22,74 @@ function toast(msg) {
   }, 2800);
 }
 
+/**
+ * Подтверждение в модальном слое. Во встроенных превью (Simple Browser) `window.confirm` часто
+ * отключён или сразу возвращает true — тогда запись «удалялась» без вопроса.
+ * @param {string} message
+ * @param {{ leftLabel?: string, rightLabel?: string, focusLeft?: boolean }} [options]
+ * @returns {Promise<boolean>} true — правый вариант (напр. «Удалить»), false — левый («Оставить»)
+ */
+function confirmDialog(message, options = {}) {
+  const leftLabel = options.leftLabel ?? 'Отмена';
+  const rightLabel = options.rightLabel ?? 'ОК';
+  const focusLeft = options.focusLeft === true;
+  return new Promise((resolve) => {
+    const wrap = document.createElement('div');
+    wrap.className = 'ui-confirm';
+    wrap.setAttribute('role', 'dialog');
+    wrap.setAttribute('aria-modal', 'true');
+    wrap.setAttribute('aria-labelledby', 'ui-confirm-title');
+    wrap.innerHTML = `
+      <div class="ui-confirm__backdrop" data-confirm-dismiss tabindex="-1"></div>
+      <div class="ui-confirm__card card">
+        <p class="ui-confirm__text" id="ui-confirm-title">${esc(message)}</p>
+        <div class="ui-confirm__actions">
+          <button type="button" class="btn btn-secondary" data-confirm-no>${esc(leftLabel)}</button>
+          <button type="button" class="btn btn-primary" data-confirm-yes>${esc(rightLabel)}</button>
+        </div>
+      </div>
+    `;
+
+    const finish = (val) => {
+      document.removeEventListener('keydown', onKey);
+      wrap.remove();
+      resolve(val);
+    };
+
+    const onKey = (ev) => {
+      if (ev.key === 'Escape') finish(false);
+    };
+
+    document.addEventListener('keydown', onKey);
+    wrap.querySelector('[data-confirm-yes]')?.addEventListener('click', () => finish(true));
+    wrap.querySelector('[data-confirm-no]')?.addEventListener('click', () => finish(false));
+    wrap.querySelector('[data-confirm-dismiss]')?.addEventListener('click', () => finish(false));
+
+    document.body.appendChild(wrap);
+    requestAnimationFrame(() => {
+      const el = focusLeft
+        ? wrap.querySelector('[data-confirm-no]')
+        : wrap.querySelector('[data-confirm-yes]');
+      el?.focus();
+    });
+  });
+}
+
+/** Завершённый визит: статус или фактическое окончание (как в completeAppointment). */
+function appointmentRowIsFinished(a) {
+  if (!a) return false;
+  if (a.status === 'done') return true;
+  const t = Number(a.actualEndAt);
+  return Number.isFinite(t) && t > 0;
+}
+
+/** Полная себестоимость визита; у старых записей только материалы в materialCostRub. */
+function appointmentTotalCogs(a) {
+  const t = Number(a?.totalCogsRub);
+  if (Number.isFinite(t) && t >= 0) return t;
+  return Number(a?.materialCostRub) || 0;
+}
+
 /** Разметка карточки «Тест и сохранение данных» (экран «Сегодня» и настройки). */
 function htmlDataBackupCard(footnoteHtml = '') {
   return `
@@ -30,6 +98,10 @@ function htmlDataBackupCard(footnoteHtml = '') {
 
       <div class="svc-data-action">
         <button type="button" class="btn btn-secondary" id="svc-demo">Заполнить демо-данными</button>
+      </div>
+
+      <div class="svc-data-action">
+        <button type="button" class="btn btn-secondary" id="svc-demo-purge">Удалить демо-данные</button>
       </div>
 
       <div class="svc-data-action">
@@ -68,6 +140,29 @@ const MATERIAL_TYPES = [
 ];
 const WEIGHT_TYPES = new Set(['канекалон', 'термоволокно', 'кудри']);
 
+/** Типы для формы «новый материал» на экране прихода (value → подпись для итогового name). */
+const PM_PURCHASE_NEW_MATERIAL_TYPES = [
+  ['канекалон', 'Канекалон'],
+  ['термоволокно', 'Термоволокно'],
+  ['кудри', 'Кудри'],
+  ['резинки', 'Резинки'],
+  ['декор', 'Декор'],
+  ['уход', 'Уход'],
+  ['прочее', 'Другое'],
+];
+const PM_PURCHASE_TYPE_DISPLAY = Object.fromEntries(PM_PURCHASE_NEW_MATERIAL_TYPES);
+
+function buildPurchaseNewMaterialDisplayName(typeValue, seriesRaw, colorRaw) {
+  const label = PM_PURCHASE_TYPE_DISPLAY[String(typeValue || '').trim()];
+  const series = String(seriesRaw ?? '').trim();
+  const color = String(colorRaw ?? '').trim();
+  const parts = [];
+  if (label) parts.push(label);
+  if (series) parts.push(series);
+  if (color) parts.push(color);
+  return parts.join(' · ');
+}
+
 function unitCodeLabel(unitCode) {
   return unitCode === 'pcs' ? 'штуки' : 'граммы';
 }
@@ -78,6 +173,15 @@ function unitCodeShort(unitCode) {
 
 function unitCodePriceLabel(unitCode) {
   return unitCode === 'pcs' ? 'штуку' : 'грамм';
+}
+
+/** Куда вести «Назад» с экрана complete-*: из «Записей» или по умолчанию «Сегодня». */
+function completeReturnTarget(route) {
+  const raw = route || '';
+  const qIdx = raw.indexOf('?');
+  if (qIdx < 0) return 'today';
+  const p = new URLSearchParams(raw.slice(qIdx + 1));
+  return p.get('from') === 'records' ? 'records' : 'today';
 }
 
 function parseRoute(r) {
@@ -183,7 +287,7 @@ export async function mount(shell, ctx) {
   } else if (parsed.view === 'new') {
     await renderWizard(root, db, go);
   } else if (parsed.view === 'complete') {
-    await renderComplete(root, db, parsed.id, go, refresh);
+    await renderComplete(root, db, parsed.id, go, refresh, meta, completeReturnTarget(route));
   } else {
     root.innerHTML = await renderToday(db, meta, go);
   }
@@ -267,7 +371,7 @@ async function renderToday(db, meta, go) {
   const doneToday = day.filter((a) => a.status === 'done');
   const rev = doneToday.reduce((s, a) => s + (Number(a.receivedRub) || 0), 0);
   const profit = doneToday.reduce((s, a) => s + (Number(a.profitRub) || 0), 0);
-  const matCost = doneToday.reduce((s, a) => s + (Number(a.materialCostRub) || 0), 0);
+  const matCost = doneToday.reduce((s, a) => s + appointmentTotalCogs(a), 0);
   const plannedMinDay = dayForLoad.reduce((s, a) => s + (Number(a.plannedMinutes) || 0), 0);
 
   const clientMap = Object.fromEntries(clients.map((c) => [c.id, c]));
@@ -339,7 +443,12 @@ async function renderToday(db, meta, go) {
           return `<article class="card record-card" data-open="${a.id}">
           <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px">
             <div><strong>${esc(F.formatTime(a.time))}</strong> · ${esc(c?.name || 'Клиент')} ${star}</div>
-            <span class="${F.appointmentBadgeClass(a, nowMs)}">${esc(F.appointmentStatusLabel(a, nowMs))}</span>
+            <div class="record-card__head-actions">
+              <span class="${F.appointmentBadgeClass(a, nowMs)}">${esc(F.appointmentStatusLabel(a, nowMs))}</span>
+              <button type="button" class="appt-delete-btn" data-delete-appt="${a.id}" data-appt-done="${
+                appointmentRowIsFinished(a) ? '1' : '0'
+              }" title="Удалить запись" aria-label="Удалить запись"><span class="appt-delete-btn__ico" aria-hidden="true">🗑</span></button>
+            </div>
           </div>
           <div style="margin-top:6px;font-weight:600">${esc(a.serviceNameSnapshot || '')}</div>
           <div class="status-line">План: ${esc(F.minutesToLabel(a.plannedMinutes))} · Сложн.: ${a.difficulty || '—'}</div>
@@ -383,7 +492,7 @@ async function renderToday(db, meta, go) {
       </div>
       <div class="stat-grid">
         <div class="card compact">
-          <div class="card-title">Материалы (факт)</div>
+          <div class="card-title">Себестоимость</div>
           <p class="stat-big" style="font-size:1.1rem">${F.money(matCost)}</p>
         </div>
         <div class="card compact">
@@ -400,6 +509,42 @@ async function renderToday(db, meta, go) {
   </div>`;
 }
 
+function attachAppointmentDeleteButtons(root, db, go, refresh) {
+  root.querySelectorAll('[data-delete-appt]').forEach((btn) => {
+    btn.addEventListener(
+      'click',
+      (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const id = Number(btn.getAttribute('data-delete-appt'));
+        if (!id) return;
+        const isDone = btn.getAttribute('data-appt-done') === '1';
+        const msg = isDone
+          ? 'Удалить завершённую запись?\nЕсли по ней были списаны материалы, они не вернутся на склад автоматически.'
+          : 'Удалить эту запись?\nОна исчезнет из списка записей.';
+        void (async () => {
+          const ok = await confirmDialog(msg, {
+            leftLabel: 'Оставить',
+            rightLabel: 'Удалить',
+            focusLeft: true,
+          });
+          if (!ok) return;
+          try {
+            await db.deleteAppointment(id);
+            await refresh();
+            const cur = (location.hash.slice(1) || 'today').split('?')[0];
+            go(cur);
+          } catch (err) {
+            console.error(err);
+            toast('Не удалось удалить запись.');
+          }
+        })();
+      },
+      true
+    );
+  });
+}
+
 export function attachToday(shell, db, go, refresh) {
   const root = shell.querySelector('#app-root') || shell;
   root.querySelector('#open-settings')?.addEventListener('click', () => go('settings'));
@@ -411,28 +556,25 @@ export function attachToday(shell, db, go, refresh) {
     el.addEventListener('click', (e) => {
       if (e.target.closest('button')) return;
       const id = el.getAttribute('data-open');
-      go(`complete-${id}`);
+      go(`complete-${id}?from=today`);
     });
   });
   root.querySelectorAll('[data-done]').forEach((b) => {
     b.addEventListener('click', async (e) => {
       e.stopPropagation();
       const id = b.getAttribute('data-done');
-      go(`complete-${id}`);
+      go(`complete-${id}?from=today`);
     });
   });
+  attachAppointmentDeleteButtons(root, db, go, refresh);
   attachServiceBlock(root, db, go, refresh);
 }
 
 /** Кнопки демо / выгрузки / загрузки данных («Сегодня» и «Настройки»). */
 function attachServiceBlock(root, db, go, refresh) {
   root.querySelector('#svc-demo')?.addEventListener('click', async () => {
-    const already = await db.getMeta('demoPackLoadedV1');
-    if (already) {
-      toast('Тестовые данные уже были добавлены ранее.');
-      return;
-    }
-    if (!confirm('Демо-данные будут добавлены в базу. Продолжить?')) return;
+    const okAsk = await confirmDialog('Демо-данные будут добавлены в базу. Продолжить?');
+    if (!okAsk) return;
     try {
       const r = await db.loadDemoPack();
       if (!r.ok && r.reason === 'already_loaded') {
@@ -445,6 +587,20 @@ function attachServiceBlock(root, db, go, refresh) {
     } catch (e) {
       console.error(e);
       toast('Не удалось добавить демо.');
+    }
+  });
+
+  root.querySelector('#svc-demo-purge')?.addEventListener('click', async () => {
+    if (!confirm('Удалить только демо-данные? Ваши реальные данные останутся.')) return;
+    try {
+      await db.purgeDemoPackData();
+      await refresh();
+      const cur = (location.hash.slice(1) || 'today').split('?')[0];
+      go(cur);
+      toast('Демо-данные удалены');
+    } catch (e) {
+      console.error(e);
+      toast('Не удалось удалить демо-данные.');
     }
   });
 
@@ -479,12 +635,17 @@ async function renderRecords(db, go) {
         .map((a) => {
           const c = cmap[a.clientId];
           return `<article class="card record-card" data-rec="${a.id}">
-          <div style="display:flex;justify-content:space-between;align-items:flex-start">
+          <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px">
             <div>
               <div style="font-weight:700">${esc(F.formatDateISO(a.date))} · ${esc(F.formatTime(a.time))}</div>
               <div class="status-line">${esc(c?.name || 'Клиент')}</div>
             </div>
-            <span class="${F.appointmentBadgeClass(a, nowMs)}">${esc(F.appointmentStatusLabel(a, nowMs))}</span>
+            <div class="record-card__head-actions">
+              <span class="${F.appointmentBadgeClass(a, nowMs)}">${esc(F.appointmentStatusLabel(a, nowMs))}</span>
+              <button type="button" class="appt-delete-btn" data-delete-appt="${a.id}" data-appt-done="${
+                appointmentRowIsFinished(a) ? '1' : '0'
+              }" title="Удалить запись" aria-label="Удалить запись"><span class="appt-delete-btn__ico" aria-hidden="true">🗑</span></button>
+            </div>
           </div>
           <div style="margin-top:8px;font-weight:600">${esc(a.serviceNameSnapshot || '')}</div>
           <div class="status-line">${F.money(a.priceRub || 0)} · сложн. ${a.difficulty || '—'}</div>
@@ -499,11 +660,15 @@ async function renderRecords(db, go) {
   <div class="content list-gap">${html}</div>`;
 }
 
-export function attachRecords(shell, db, go) {
+export function attachRecords(shell, db, go, refresh) {
   const root = shell.querySelector('#app-root') || shell;
   root.querySelectorAll('[data-rec]').forEach((el) => {
-    el.addEventListener('click', () => go(`complete-${el.getAttribute('data-rec')}`));
+    el.addEventListener('click', (e) => {
+      if (e.target.closest('.appt-delete-btn')) return;
+      go(`complete-${el.getAttribute('data-rec')}?from=records`);
+    });
   });
+  attachAppointmentDeleteButtons(root, db, go, refresh);
 }
 
 async function renderClients(db, go) {
@@ -518,11 +683,14 @@ async function renderClients(db, go) {
               ? done.reduce((s, a) => s + (Number(a.receivedRub) || 0), 0) / done.length
               : 0;
           const star = visits > 1 ? '<span class="badge">⭐ Повторный</span>' : '';
+          const phoneList = String(c.phone ?? '').trim();
+          const phoneShown = phoneList ? esc(phoneList) : '—';
           return `<article class="card client-card" data-client="${c.id}">
           <div style="display:flex;justify-content:space-between;align-items:center">
             <div style="font-weight:700">${esc(c.name || 'Без имени')}</div>
             ${star}
           </div>
+          <div class="status-line" style="margin-top:8px;line-height:1.35">${phoneShown}</div>
           <div class="status-line">${visits} визитов · средний чек ${F.money(avg)}</div>
         </article>`;
         })
@@ -579,35 +747,84 @@ async function renderClientDetail(db, id, go) {
 
   return `<div class="content">
     <div class="back-row"><a href="#clients" data-back>← Назад</a></div>
-    <header class="page-header" style="padding-left:0;padding-right:0">
-      <div>
-        <h1>${esc(client.name)}</h1>
-        <p class="sub">${star}</p>
+    <div id="cd-view-block">
+      <header class="page-header" style="padding-left:0;padding-right:0">
+        <div>
+          <h1 id="cd-ro-name">${esc(client.name)}</h1>
+          <p class="sub">${star}</p>
+        </div>
+      </header>
+      <button type="button" class="btn btn-secondary" style="width:100%;margin-bottom:14px" id="cd-edit-open">Редактировать</button>
+      <div style="text-align:right;margin:-8px 0 14px">
+        <button type="button" class="btn btn-ghost" id="cd-delete-client" style="padding:6px 10px;width:auto;font-size:0.86rem;color:var(--muted)" title="Удалить клиента" aria-label="Удалить клиента">🗑 Удалить клиента</button>
       </div>
-    </header>
-    <div class="card">
-      <div class="card-title">Контакты</div>
-      <p style="margin:0 0 6px">${esc(client.phone || '—')}</p>
-      <p style="margin:0;color:var(--muted);font-size:0.9rem">${esc(client.telegram || '')}</p>
+      <div class="card">
+        <div class="card-title">Контакты</div>
+        <p id="cd-ro-phone" style="margin:0 0 6px">${esc(client.phone || '—')}</p>
+        <p style="margin:0;color:var(--muted);font-size:0.9rem">${esc(client.telegram || '')}</p>
+      </div>
+      <div class="card">
+        <div class="card-title">Статистика</div>
+        <p class="status-line">Визитов: ${visits}</p>
+        <p class="status-line">Средний чек: ${F.money(avg)}</p>
+        <p class="status-line">Всего оплат: ${F.money(totalPaid)}</p>
+      </div>
+      <div class="card">
+        <div class="card-title">Заметки</div>
+        <p id="cd-ro-notes" style="margin:0;white-space:pre-wrap">${esc(client.notes || '—')}</p>
+      </div>
+      <h2 style="font-size:1rem;margin:16px 0 8px">История</h2>
+      ${hist || '<p class="muted">Пока нет записей</p>'}
+      <button type="button" class="btn btn-primary" style="margin-top:16px" id="cd-new">＋ Новая запись</button>
     </div>
-    <div class="card">
-      <div class="card-title">Статистика</div>
-      <p class="status-line">Визитов: ${visits}</p>
-      <p class="status-line">Средний чек: ${F.money(avg)}</p>
-      <p class="status-line">Всего оплат: ${F.money(totalPaid)}</p>
+    <div id="cd-edit-panel" hidden>
+      <h2 style="font-size:1.15rem;margin:0 0 12px;padding-top:4px">Редактирование клиента</h2>
+      <label class="label" for="cd-ed-name">Имя</label>
+      <input class="field" id="cd-ed-name" type="text" autocomplete="name" value="${esc(client.name)}" />
+      <label class="label" for="cd-ed-phone">Телефон</label>
+      <input class="field" id="cd-ed-phone" type="tel" inputmode="tel" autocomplete="tel" value="${esc(client.phone || '')}" />
+      <label class="label" for="cd-ed-notes">Заметка</label>
+      <textarea class="field" id="cd-ed-notes" rows="4" placeholder="Заметка">${esc(client.notes || '')}</textarea>
+      <div style="display:flex;flex-direction:column;gap:10px;margin-top:16px">
+        <button type="button" class="btn btn-primary" id="cd-ed-save">Сохранить</button>
+        <button type="button" class="btn btn-secondary" id="cd-ed-cancel">Отмена</button>
+      </div>
     </div>
-    <div class="card">
-      <div class="card-title">Заметки</div>
-      <p style="margin:0;white-space:pre-wrap">${esc(client.notes || '—')}</p>
-    </div>
-    <h2 style="font-size:1rem;margin:16px 0 8px">История</h2>
-    ${hist || '<p class="muted">Пока нет записей</p>'}
-    <button type="button" class="btn btn-primary" style="margin-top:16px" id="cd-new">＋ Новая запись</button>
   </div>`;
 }
 
-export function attachClientDetail(shell, go, id) {
+export function attachClientDetail(shell, db, go, id) {
   const root = shell.querySelector('#app-root') || shell;
+  const cid = Number(id);
+
+  const viewBlock = () => root.querySelector('#cd-view-block');
+  const editPanel = () => root.querySelector('#cd-edit-panel');
+
+  /** Подставить в форму редактирования то, что сейчас на экране в режиме просмотра. */
+  function refillEditFromRenderedCard() {
+    const nameEl = root.querySelector('#cd-ed-name');
+    const phoneEl = root.querySelector('#cd-ed-phone');
+    const notesEl = root.querySelector('#cd-ed-notes');
+    const roName = root.querySelector('#cd-ro-name');
+    const roPhone = root.querySelector('#cd-ro-phone');
+    const roNotes = root.querySelector('#cd-ro-notes');
+    if (nameEl && roName) nameEl.value = roName.textContent || '';
+    if (phoneEl && roPhone) {
+      const t = String(roPhone.textContent ?? '').trim();
+      phoneEl.value = t === '—' ? '' : t;
+    }
+    if (notesEl && roNotes) {
+      const t = roNotes.textContent || '';
+      notesEl.value = t === '—' ? '' : t;
+    }
+  }
+
+  const closeEdit = () => {
+    editPanel()?.setAttribute('hidden', '');
+    viewBlock()?.removeAttribute('hidden');
+    refillEditFromRenderedCard();
+  };
+
   root.querySelector('[data-back]')?.addEventListener('click', (e) => {
     e.preventDefault();
     go('clients');
@@ -617,13 +834,69 @@ export function attachClientDetail(shell, go, id) {
       WIZARD_KEY,
       JSON.stringify({
         step: 2,
-        clientId: Number(id),
+        clientId: cid,
         materialsPlan: [],
         difficulty: 2,
         tags: [],
       })
     );
     go('new');
+  });
+
+  root.querySelector('#cd-edit-open')?.addEventListener('click', () => {
+    refillEditFromRenderedCard();
+    viewBlock()?.setAttribute('hidden', '');
+    editPanel()?.removeAttribute('hidden');
+  });
+
+  root.querySelector('#cd-delete-client')?.addEventListener('click', async () => {
+    const linked = (await db.listAppointments()).filter(
+      (a) => Number(a.clientId) === cid
+    );
+    if (linked.length > 0) {
+      toast('У клиента есть записи. Сначала удалите связанные записи.');
+      return;
+    }
+    const ok = await confirmDialog('Удалить клиента?\nОн исчезнет из списка клиентов.', {
+      leftLabel: 'Оставить',
+      rightLabel: 'Удалить',
+      focusLeft: true,
+    });
+    if (!ok) return;
+    try {
+      await db.deleteClient(cid);
+      toast('Клиент удалён');
+      go('clients');
+    } catch (err) {
+      console.error(err);
+      toast('Не удалось удалить клиента');
+    }
+  });
+
+  root.querySelector('#cd-ed-cancel')?.addEventListener('click', () => {
+    closeEdit();
+  });
+
+  root.querySelector('#cd-ed-save')?.addEventListener('click', async () => {
+    const name = String(root.querySelector('#cd-ed-name')?.value ?? '').trim();
+    const phone = String(root.querySelector('#cd-ed-phone')?.value ?? '').trim();
+    const notes = String(root.querySelector('#cd-ed-notes')?.value ?? '').trim();
+    if (!name) {
+      toast('Введите имя клиента.');
+      return;
+    }
+    if (!phone) {
+      toast('Введите номер телефона клиента.');
+      return;
+    }
+    try {
+      await db.updateClient(cid, { name, phone, notes });
+      toast('Сохранено');
+      go(`client-${cid}`);
+    } catch (err) {
+      console.error(err);
+      toast('Не удалось сохранить');
+    }
   });
 }
 
@@ -771,16 +1044,7 @@ async function renderPurchase(db, go) {
   const materials = await db.listMaterials();
   const params = new URLSearchParams(location.hash.split('?')[1] || '');
   const preselectedMaterialId = params.get('materialId');
-  if (!materials.length) {
-    return `<div class="content">
-      <div class="back-row"><a href="#materials" data-back>← Материалы</a></div>
-      <h1 style="margin:0 0 16px;font-size:1.35rem">Приход материала</h1>
-      <div class="card" style="text-align:center">
-        <p class="empty-hint" style="padding:8px 0;margin:0">У вас пока нет материалов</p>
-        <button type="button" class="btn btn-primary" id="pm-go-add">＋ Добавить материал</button>
-      </div>
-    </div>`;
-  }
+  const hasMaterials = materials.length > 0;
   const purchaseFieldLabels = (unitCode) => {
     if (unitCode === 'pcs') {
       return {
@@ -811,50 +1075,93 @@ async function renderPurchase(db, go) {
   };
   const packPriceDefaultAttr = (m) => Math.max(0, Number(m?.packagePrice) || 0);
 
-  const opts = materials
-    .map((m) => {
-      const pSize = packSizeDefaultAttr(m);
-      const pPrice = packPriceDefaultAttr(m);
-      return `<option value="${m.id}" data-price="${
-        Number(m.pricePerUnit) || 0
-      }" data-unit="${esc(m.unit || 'g')}" data-pack-price="${pPrice}" data-pack-size="${pSize}" ${
-        preselectedMaterialId && String(m.id) === String(preselectedMaterialId) ? 'selected' : ''
-      }>${esc(m.name)}</option>`;
-    })
-    .join('');
+  const opts = hasMaterials
+    ? materials
+        .map((m) => {
+          const pSize = packSizeDefaultAttr(m);
+          const pPrice = packPriceDefaultAttr(m);
+          return `<option value="${m.id}" data-price="${
+            Number(m.pricePerUnit) || 0
+          }" data-unit="${esc(m.unit || 'g')}" data-pack-price="${pPrice}" data-pack-size="${pSize}" ${
+            preselectedMaterialId && String(m.id) === String(preselectedMaterialId) ? 'selected' : ''
+          }>${esc(m.name)}</option>`;
+        })
+        .join('')
+    : '';
   const selectedMat =
     materials.find((m) => String(m.id) === String(preselectedMaterialId)) || null;
+  /** В режиме «новый материал» стартуем с граммовых подписей. */
   const firstPrice = Number(selectedMat?.pricePerUnit) || 0;
-  const firstUnit = selectedMat?.unit || 'g';
+  const firstUnit = hasMaterials ? selectedMat?.unit || 'g' : 'g';
   const firstLabels = purchaseFieldLabels(firstUnit);
-  const defaultPackSize = packSizeDefaultAttr(selectedMat);
+  const defaultPackSize = hasMaterials ? packSizeDefaultAttr(selectedMat) : 100;
   const defaultPacks = 1;
-  const firstPricePerPack = packPriceDefaultAttr(selectedMat);
-  return `<div class="content">
+  const firstPricePerPack = hasMaterials ? packPriceDefaultAttr(selectedMat) : 0;
+  const preOk = !!(hasMaterials && preselectedMaterialId);
+  const packsStartEnabled = !hasMaterials || !!preOk;
+  const unitLineHtml = !hasMaterials
+    ? `Новый материал · учёт в: ${esc(firstLabels.unitLabel)}`
+    : preselectedMaterialId
+      ? `Учёт ведётся в: ${esc(firstLabels.unitLabel)}`
+      : 'Выберите материал';
+  const priceLineHtml = !hasMaterials
+    ? 'Укажите партию — цена списания посчитается автоматически'
+    : preselectedMaterialId
+      ? `Последняя закупка: ${F.money(firstPrice)} за ${esc(firstLabels.unitPriceWord)}`
+      : 'Сначала выберите материал';
+  const overrideDisp = packsStartEnabled && hasMaterials ? '' : 'none';
+  const pmNewTypeOptions = PM_PURCHASE_NEW_MATERIAL_TYPES.map(
+    ([val, lab]) => `<option value="${esc(val)}">${esc(lab)}</option>`
+  ).join('');
+  return `<div class="content" id="pm-page-root" data-pm-has-mats="${hasMaterials ? '1' : '0'}">
     <div class="back-row"><a href="#materials" data-back>← Материалы</a></div>
     <h1 style="margin:0 0 16px;font-size:1.35rem">Приход материала</h1>
     <p class="muted" style="margin:-4px 0 12px">Приход вводится пачками/упаковками. На склад и в списание идут граммы или штуки.</p>
-    <label class="label" for="pm-m">Материал</label>
-    <select class="field" id="pm-m">
-      ${
-        preselectedMaterialId
-          ? ''
-          : '<option value="" selected disabled>Выберите материал</option>'
-      }
-      ${opts}
-    </select>
-    <p class="status-line" id="pm-unit-line">${
-      preselectedMaterialId ? `Учёт ведётся в: ${esc(firstLabels.unitLabel)}` : 'Выберите материал'
-    }</p>
-    <p class="status-line" id="pm-price-line">${
-      preselectedMaterialId
-        ? `Последняя закупка: ${F.money(firstPrice)} за ${esc(firstLabels.unitPriceWord)}`
-        : 'Сначала выберите материал'
-    }</p>
+    ${
+      hasMaterials
+        ? `<div class="card compact pm-mode-card" id="pm-mode-wrap">
+      <div class="card-title" style="margin-bottom:2px">Способ добавления материала</div>
+      <div class="pm-mode-tabs" role="tablist" aria-label="Способ добавления материала">
+        <button type="button" role="tab" class="pm-mode-tab is-active" id="pm-tab-existing" aria-selected="true">Выбрать из списка</button>
+        <button type="button" role="tab" class="pm-mode-tab" id="pm-tab-new" aria-selected="false">+ Новый материал</button>
+      </div>
+    </div>`
+        : ''
+    }
+    <div id="pm-existing-block" ${!hasMaterials ? 'hidden' : ''}>
+      <label class="label" for="pm-m">Материал</label>
+      <select class="field" id="pm-m">
+        ${
+          preselectedMaterialId
+            ? ''
+            : '<option value="" selected disabled>Выберите материал</option>'
+        }
+        ${opts}
+      </select>
+    </div>
+    <div id="pm-new-block" ${hasMaterials ? 'hidden' : ''}>
+      <label class="label" for="pm-new-type">Тип материала</label>
+      <select class="field" id="pm-new-type">
+        <option value="" selected disabled>Выберите тип</option>
+        ${pmNewTypeOptions}
+      </select>
+      <label class="label" for="pm-new-series">Название / серия</label>
+      <input class="field" id="pm-new-series" type="text" autocomplete="off" placeholder="Например: Неон, Омбре, Премиум" />
+      <label class="label" for="pm-new-color">Цвет / номер оттенка</label>
+      <input class="field" id="pm-new-color" type="text" autocomplete="off" placeholder="Например: 2365, 1B или розовый (необязательно)" />
+      <label class="label" for="pm-new-unit">Единица списания</label>
+      <select class="field" id="pm-new-unit">
+        <option value="g">граммы</option>
+        <option value="pcs">штуки</option>
+      </select>
+      <hr class="soft" style="margin:16px 0" />
+    </div>
+    <p class="status-line" id="pm-unit-line">${unitLineHtml}</p>
+    <p class="status-line" id="pm-price-line">${priceLineHtml}</p>
 
-    <div class="card compact" id="pm-override-row" style="margin-bottom:14px;${preselectedMaterialId ? '' : 'display:none'}">
+    <div class="card compact" id="pm-override-row" style="margin-bottom:14px;display:${overrideDisp}">
       <label class="checkbox-label" style="display:flex;align-items:center;gap:10px;cursor:pointer;font-weight:500">
-        <input type="checkbox" id="pm-pack-override" ${preselectedMaterialId ? '' : 'disabled'} />
+        <input type="checkbox" id="pm-pack-override" ${preOk ? '' : 'disabled'} />
         Параметры закупки отличаются
       </label>
       <p class="status-line" style="margin:8px 0 0">Можно изменить размер и цену упаковки именно этой партии (в карточке останутся стандартные значения).</p>
@@ -862,17 +1169,17 @@ async function renderPurchase(db, go) {
 
     <div id="pm-packs-block">
       <label class="label" id="pm-pack-count-label" for="pm-pack-count">${esc(firstLabels.packCountLabel)}</label>
-      <input class="field" id="pm-pack-count" type="number" inputmode="decimal" min="0" step="1" value="${defaultPacks}" ${preselectedMaterialId ? '' : 'disabled'} />
+      <input class="field" id="pm-pack-count" type="number" inputmode="decimal" min="0" step="1" value="${defaultPacks}" ${packsStartEnabled ? '' : 'disabled'} />
       <label class="label" id="pm-pack-size-label" for="pm-pack-weight">${esc(firstLabels.packSizeLabel)}</label>
-      <input class="field" id="pm-pack-weight" type="number" inputmode="decimal" min="0" step="1" value="${defaultPackSize}" ${preselectedMaterialId ? '' : 'disabled'} />
+      <input class="field" id="pm-pack-weight" type="number" inputmode="decimal" min="0" step="1" value="${defaultPackSize}" ${packsStartEnabled ? '' : 'disabled'} />
       <label class="label" id="pm-pack-price-label" for="pm-pack-price">${esc(firstLabels.packPriceLabel)}</label>
-      <input class="field" id="pm-pack-price" type="number" inputmode="decimal" min="0" step="1" value="${Math.round(firstPricePerPack)}" ${preselectedMaterialId ? '' : 'disabled'} />
+      <input class="field" id="pm-pack-price" type="number" inputmode="decimal" min="0" step="1" value="${Math.round(firstPricePerPack)}" ${packsStartEnabled ? '' : 'disabled'} />
     </div>
 
     <div class="card compact">
       <div class="card-title">Автоматический расчёт</div>
-      <p class="status-line">Итого на склад: <strong id="pm-total-grams">${defaultPackSize}</strong> <span id="pm-stock-unit-suffix">${esc(firstLabels.stockSuffix)}</span></p>
-      <p class="status-line">Цена списания: <strong id="pm-price-per-gram">${F.money(firstPrice)}</strong> <span id="pm-cost-unit-suffix">${esc(firstLabels.costSuffix)}</span></p>
+      <p class="status-line">Итого на склад: <strong id="pm-total-grams">${Math.round(Number(defaultPacks) * Number(defaultPackSize)) || defaultPackSize}</strong> <span id="pm-stock-unit-suffix">${esc(firstLabels.stockSuffix)}</span></p>
+      <p class="status-line">Цена списания: <strong id="pm-price-per-gram">${F.money(hasMaterials ? firstPrice : 0)}</strong> <span id="pm-cost-unit-suffix">${esc(firstLabels.costSuffix)}</span></p>
     </div>
 
     <label class="label" for="pm-s">Поставщик</label>
@@ -881,7 +1188,7 @@ async function renderPurchase(db, go) {
     <input class="field" id="pm-d" type="date" value="${F.todayISO()}" />
     <label class="label" for="pm-n">Комментарий</label>
     <textarea class="field" id="pm-n" placeholder="Необязательно"></textarea>
-    <button type="button" class="btn btn-primary" id="pm-save" ${preselectedMaterialId ? '' : 'disabled'}>Сохранить приход</button>
+    <button type="button" class="btn btn-primary" id="pm-save" ${packsStartEnabled ? '' : 'disabled'}>Сохранить приход</button>
   </div>`;
 }
 
@@ -892,7 +1199,17 @@ export function attachPurchase(shell, db, go, refresh) {
     go('materials');
   });
   root.querySelector('#pm-go-add')?.addEventListener('click', () => go('add-material'));
+
+  const hasMaterials =
+    root.querySelector('#pm-page-root')?.getAttribute('data-pm-has-mats') === '1';
+  const existingBlock = root.querySelector('#pm-existing-block');
+  const newBlock = root.querySelector('#pm-new-block');
+
   const matSelect = root.querySelector('#pm-m');
+  const newUnitEl = root.querySelector('#pm-new-unit');
+
+  const isNewMaterialMode = () => !!(newBlock && !newBlock.hidden);
+
   const unitLine = root.querySelector('#pm-unit-line');
   const priceLine = root.querySelector('#pm-price-line');
   const totalGramsEl = root.querySelector('#pm-total-grams');
@@ -934,7 +1251,28 @@ export function attachPurchase(shell, db, go, refresh) {
 
   const formInputsCore = [packCountEl];
 
+  /** Количество и цена в базовых ед.: г или шт (из ввода по пачкам/упаковкам) */
+  const recalcPurchaseTotals = () => {
+    const packsIn = Math.max(0, Number(packCountEl?.value) || 0);
+    const sizeOnePack = Math.max(0, Number(packWeightEl?.value) || 0);
+    const priceOnePack = Math.max(0, Number(packPriceEl?.value) || 0);
+    const qtyBase = packsIn * sizeOnePack;
+    const unitPriceBase = sizeOnePack > 0 ? priceOnePack / sizeOnePack : 0;
+    if (totalGramsEl) totalGramsEl.textContent = String(Math.round(qtyBase));
+    if (pricePerGramEl) pricePerGramEl.textContent = F.money(unitPriceBase);
+  };
+
   const applyPurchaseOverrideUI = () => {
+    if (isNewMaterialMode()) {
+      if (overrideRow) overrideRow.style.display = 'none';
+      if (overrideChk) {
+        overrideChk.disabled = true;
+        overrideChk.checked = false;
+      }
+      if (packWeightEl) packWeightEl.disabled = false;
+      if (packPriceEl) packPriceEl.disabled = false;
+      return;
+    }
     const opt = matSelect?.selectedOptions?.[0];
     const chosen = !!(opt?.value);
     if (overrideRow) overrideRow.style.display = chosen ? '' : 'none';
@@ -964,6 +1302,16 @@ export function attachPurchase(shell, db, go, refresh) {
   };
 
   const setMaterialChosenState = (chosen) => {
+    if (isNewMaterialMode()) {
+      if (saveBtn) saveBtn.disabled = false;
+      for (const el of formInputsCore) {
+        if (!el) continue;
+        if ('disabled' in el) el.disabled = false;
+      }
+      applyPurchaseOverrideUI();
+      recalcPurchaseTotals();
+      return;
+    }
     if (saveBtn) saveBtn.disabled = !chosen;
     for (const el of formInputsCore) {
       if (!el) continue;
@@ -977,7 +1325,21 @@ export function attachPurchase(shell, db, go, refresh) {
     }
   };
 
+  const syncNewMaterialLabelsFromUnit = () => {
+    const unit = newUnitEl?.value === 'pcs' ? 'pcs' : 'g';
+    const labels = purchaseFieldLabels(unit);
+    if (unitLine) unitLine.textContent = `Новый материал · учёт в: ${labels.unitLabel}`;
+    if (priceLine)
+      priceLine.textContent = 'Укажите партию — цена списания посчитается автоматически';
+    if (packSizeLabelEl) packSizeLabelEl.textContent = labels.packSizeLabel;
+    if (packCountLabelEl) packCountLabelEl.textContent = labels.packCountLabel;
+    if (packPriceLabelEl) packPriceLabelEl.textContent = labels.packPriceLabel;
+    if (stockUnitSuffixEl) stockUnitSuffixEl.textContent = labels.stockSuffix;
+    if (costUnitSuffixEl) costUnitSuffixEl.textContent = labels.costSuffix;
+  };
+
   const syncMaterialMeta = () => {
+    if (!hasMaterials || isNewMaterialMode()) return;
     const opt = matSelect?.selectedOptions?.[0];
     if (!opt || !opt.value) {
       setMaterialChosenState(false);
@@ -1002,18 +1364,12 @@ export function attachPurchase(shell, db, go, refresh) {
     recalcPurchaseTotals();
   };
 
-  /** Количество и цена в базовых ед.: г или шт (из ввода по пачкам/упаковкам) */
-  const recalcPurchaseTotals = () => {
-    const packsIn = Math.max(0, Number(packCountEl?.value) || 0);
-    const sizeOnePack = Math.max(0, Number(packWeightEl?.value) || 0);
-    const priceOnePack = Math.max(0, Number(packPriceEl?.value) || 0);
-    const qtyBase = packsIn * sizeOnePack;
-    const unitPriceBase = sizeOnePack > 0 ? priceOnePack / sizeOnePack : 0;
-    if (totalGramsEl) totalGramsEl.textContent = String(Math.round(qtyBase));
-    if (pricePerGramEl) pricePerGramEl.textContent = F.money(unitPriceBase);
-  };
-
   matSelect?.addEventListener('change', syncMaterialMeta);
+  newUnitEl?.addEventListener('change', () => {
+    if (!isNewMaterialMode()) return;
+    syncNewMaterialLabelsFromUnit();
+    recalcPurchaseTotals();
+  });
   overrideChk?.addEventListener('change', () => {
     if (!overrideChk.checked) syncPackFieldsFromMaterialOption();
     applyPurchaseOverrideUI();
@@ -1023,14 +1379,70 @@ export function attachPurchase(shell, db, go, refresh) {
   packWeightEl?.addEventListener('input', recalcPurchaseTotals);
   packPriceEl?.addEventListener('input', recalcPurchaseTotals);
 
-  syncMaterialMeta();
+  const tabExisting = root.querySelector('#pm-tab-existing');
+  const tabNew = root.querySelector('#pm-tab-new');
+
+  function updateModeTabsUI() {
+    if (!hasMaterials) return;
+    const isNew = isNewMaterialMode();
+    tabExisting?.classList.toggle('is-active', !isNew);
+    tabNew?.classList.toggle('is-active', isNew);
+    tabExisting?.setAttribute('aria-selected', !isNew ? 'true' : 'false');
+    tabNew?.setAttribute('aria-selected', isNew ? 'true' : 'false');
+  }
+
+  function setPurchaseMode(mode) {
+    if (!hasMaterials || !existingBlock || !newBlock) return;
+    if (mode === 'new') {
+      existingBlock.hidden = true;
+      newBlock.hidden = false;
+      if (overrideChk) overrideChk.checked = false;
+      syncNewMaterialLabelsFromUnit();
+      applyPurchaseOverrideUI();
+      if (saveBtn) saveBtn.disabled = false;
+      if (packCountEl) packCountEl.disabled = false;
+      recalcPurchaseTotals();
+    } else {
+      newBlock.hidden = true;
+      existingBlock.hidden = false;
+      syncMaterialMeta();
+    }
+    updateModeTabsUI();
+  }
+
+  tabExisting?.addEventListener('click', () => setPurchaseMode('existing'));
+  tabNew?.addEventListener('click', () => setPurchaseMode('new'));
+
+  if (!hasMaterials) {
+    if (overrideRow) overrideRow.style.display = 'none';
+    if (overrideChk) overrideChk.disabled = true;
+    syncNewMaterialLabelsFromUnit();
+    recalcPurchaseTotals();
+  } else {
+    syncMaterialMeta();
+    updateModeTabsUI();
+  }
 
   root.querySelector('#pm-save')?.addEventListener('click', async () => {
-    const materialId = root.querySelector('#pm-m').value;
-    if (!materialId) {
-      toast('Выберите материал');
-      return;
+    if (isNewMaterialMode()) {
+      const typeVal = String(root.querySelector('#pm-new-type')?.value ?? '').trim();
+      if (!typeVal) {
+        toast('Выберите тип материала.');
+        return;
+      }
+      const seriesTrim = String(root.querySelector('#pm-new-series')?.value ?? '').trim();
+      if (!seriesTrim) {
+        toast('Введите название или серию материала.');
+        return;
+      }
+    } else {
+      const midRaw = root.querySelector('#pm-m')?.value;
+      if (!midRaw) {
+        toast('Выберите материал.');
+        return;
+      }
     }
+
     const packsIn = Math.max(0, Number(packCountEl?.value) || 0);
     const sizeOnePack = Math.max(0, Number(packWeightEl?.value) || 0);
     const priceOnePack = Math.max(0, Number(packPriceEl?.value) || 0);
@@ -1050,21 +1462,56 @@ export function attachPurchase(shell, db, go, refresh) {
       return;
     }
 
-    const supplier = root.querySelector('#pm-s').value;
-    const date = root.querySelector('#pm-d').value;
-    const note = root.querySelector('#pm-n').value;
-    await db.stockPurchase({
-      materialId,
-      qty,
-      unitPrice,
-      supplier,
-      date,
-      note,
-      purchasePackPrice: priceOnePack,
-      purchasePackSize: sizeOnePack,
-      purchasePackCount: packsIn,
-      purchasePackParamsDiffer: !!(overrideChk?.checked),
-    });
+    let materialIdNum;
+    if (isNewMaterialMode()) {
+      const typeVal = String(root.querySelector('#pm-new-type')?.value ?? '').trim();
+      const seriesTrim = String(root.querySelector('#pm-new-series')?.value ?? '').trim();
+      const colorTrim = String(root.querySelector('#pm-new-color')?.value ?? '').trim();
+      const unitNorm = root.querySelector('#pm-new-unit')?.value === 'pcs' ? 'pcs' : 'g';
+      const displayName = buildPurchaseNewMaterialDisplayName(typeVal, seriesTrim, colorTrim);
+      try {
+        materialIdNum = await db.addMaterial({
+          name: displayName,
+          unit: unitNorm,
+          materialType: typeVal || 'прочее',
+          materialSeries: seriesTrim,
+          materialColorCode: colorTrim,
+          packagePrice: priceOnePack,
+          packageWeightGrams: unitNorm === 'g' ? sizeOnePack : 0,
+          packageQtyPcs: unitNorm === 'pcs' ? sizeOnePack : 0,
+          stock: 0,
+          minStock: 0,
+        });
+      } catch (e) {
+        console.error(e);
+        toast('Не удалось создать материал');
+        return;
+      }
+    } else {
+      materialIdNum = Number(root.querySelector('#pm-m')?.value);
+    }
+
+    const supplier = root.querySelector('#pm-s')?.value ?? '';
+    const date = root.querySelector('#pm-d')?.value ?? '';
+    const note = root.querySelector('#pm-n')?.value ?? '';
+    try {
+      await db.stockPurchase({
+        materialId: materialIdNum,
+        qty,
+        unitPrice,
+        supplier,
+        date,
+        note,
+        purchasePackPrice: priceOnePack,
+        purchasePackSize: sizeOnePack,
+        purchasePackCount: packsIn,
+        purchasePackParamsDiffer: isNewMaterialMode() ? false : !!(overrideChk?.checked),
+      });
+    } catch (e) {
+      console.error(e);
+      toast('Не удалось сохранить приход');
+      return;
+    }
     toast('Приход сохранён');
     await refresh();
     go('materials');
@@ -1196,7 +1643,7 @@ async function renderFinance(db, go) {
     (a) => a.status === 'done' && inRange(a.date, from, to)
   );
   const revenue = apIn.reduce((s, a) => s + (Number(a.receivedRub) || 0), 0);
-  const cogs = apIn.reduce((s, a) => s + (Number(a.materialCostRub) || 0), 0);
+  const cogs = apIn.reduce((s, a) => s + appointmentTotalCogs(a), 0);
   const profit = apIn.reduce((s, a) => s + (Number(a.profitRub) || 0), 0);
 
   const purchases = movements.filter((m) => m.type === 'in' && inRange(m.date, from, to));
@@ -1239,7 +1686,7 @@ async function renderFinance(db, go) {
       <p class="stat-big">${F.money(revenue)}</p>
     </div>
     <div class="card">
-      <div class="card-title">Материалы (по визитам)</div>
+      <div class="card-title">Себестоимость (визиты)</div>
       <p class="stat-big">${F.money(cogs)}</p>
     </div>
     <div class="card">
@@ -1291,7 +1738,7 @@ async function renderServices(db) {
       `<div class="card" style="text-align:center;padding:20px 12px;margin-bottom:0"><p class="empty-hint" style="margin:0 0 14px;padding:0">Прайс пуст — добавьте услуги вручную</p><button type="button" class="btn btn-primary" id="sv-empty-add">Добавить услугу</button></div>`
     }
     ${cards ? `<button type="button" class="btn btn-secondary" style="width:100%;margin-top:14px" id="sv-add">Добавить услугу</button>` : ''}
-    <button type="button" class="btn btn-ghost" style="width:100%;margin-top:12px;font-size:0.92rem" id="sv-purge-demo">Очистить тестовые услуги</button>
+    <button type="button" class="btn btn-ghost" style="width:100%;margin-top:12px;font-size:0.92rem" id="sv-purge-demo">Очистить демо-услуги</button>
     <p class="muted" style="margin-top:14px;font-size:0.82rem">Если услуга уже используется в записях, она скрывается из прайса (архив), а не удаляется.</p>
   </div>`;
 }
@@ -1328,21 +1775,17 @@ export function attachServices(shell, db, go, refresh) {
   root.querySelector('#sv-purge-demo')?.addEventListener('click', async () => {
     if (
       !confirm(
-        'Удалить из базы тестовые позиции (Афрокосы, боксерские косы и др.)? Занятые в записях будут только скрыты из прайса.'
+        'Убрать демо-услуги из прайса? Услуги с записями останутся в базе, но будут скрыты из списка.'
       )
     ) {
       return;
     }
     const r = await db.purgeDemoSeedServices();
     if (r.deleted === 0 && r.archived === 0) {
-      toast('Тестовые услуги не найдены');
+      toast('Демо-услуги не найдены');
       return;
     }
-    toast(
-      r.archived
-        ? `Готово: удалено ${r.deleted}, в архив (есть записи): ${r.archived}`
-        : `Удалено услуг: ${r.deleted}`
-    );
+    toast('Демо-услуги скрыты из прайса');
     await refresh();
     remountServices(go);
   });
@@ -1447,6 +1890,12 @@ export function attachFinance(shell, go) {
 
 async function renderSettings(db, meta, go, refresh) {
   const name = (await db.getMeta('masterName')) || '';
+  const hourlyMeta = meta.masterHourlyRateRub;
+  const fixedMeta = meta.orderFixedCostRub;
+  const hourlyVal =
+    hourlyMeta != null && hourlyMeta !== '' ? esc(String(hourlyMeta)) : '';
+  const fixedVal =
+    fixedMeta != null && fixedMeta !== '' ? esc(String(fixedMeta)) : '';
   const codesHint = 'Коды: KOSO-FULL-2026 · BEAUTY-CRM-KEY · MASTERS-DEMO-UNLOCK';
   return `<div class="content">
     <div class="back-row"><a href="#today" data-back>← Главная</a></div>
@@ -1454,6 +1903,16 @@ async function renderSettings(db, meta, go, refresh) {
     <label class="label" for="st-name">Как к вам обращаться</label>
     <input class="field" id="st-name" value="${esc(name)}" />
     <button type="button" class="btn btn-primary" id="st-save">Сохранить имя</button>
+    <hr class="soft" />
+    <h2 style="font-size:1rem;margin:0 0 8px">Настройки расчёта прибыли</h2>
+    <p class="muted" style="font-size:0.85rem;margin:0 0 12px;line-height:1.45">
+      Эти значения используются для расчёта реальной себестоимости записи.
+    </p>
+    <label class="label" for="st-hourly">Ставка мастера в час, ₽</label>
+    <input class="field" id="st-hourly" type="number" min="0" step="50" value="${hourlyVal}" placeholder="500" />
+    <label class="label" for="st-fixed">Фиксированный расход на заказ, ₽</label>
+    <input class="field" id="st-fixed" type="number" min="0" step="50" value="${fixedVal}" placeholder="200" />
+    <button type="button" class="btn btn-secondary" id="st-save-cost" style="margin-top:10px">Сохранить настройки</button>
     <hr class="soft" />
     <p class="muted" style="font-size:0.85rem">${esc(codesHint)}</p>
     <label class="label" for="st-code">Активация</label>
@@ -1476,6 +1935,14 @@ export function attachSettings(shell, db, go, refresh) {
   });
   root.querySelector('#st-save')?.addEventListener('click', async () => {
     await db.setMeta('masterName', root.querySelector('#st-name').value.trim() || 'Мастер');
+    toast('Сохранено');
+    await refresh();
+  });
+  root.querySelector('#st-save-cost')?.addEventListener('click', async () => {
+    const h = Math.max(0, Number(root.querySelector('#st-hourly').value) || 0);
+    const f = Math.max(0, Number(root.querySelector('#st-fixed').value) || 0);
+    await db.setMeta('masterHourlyRateRub', h);
+    await db.setMeta('orderFixedCostRub', f);
     toast('Сохранено');
     await refresh();
   });
@@ -1671,36 +2138,43 @@ async function renderWizard(root, db, go) {
       }
       const picked = clients.find((c) => Number(c.id) === Number(w.clientId)) || null;
 
+      const pickedPhoneLine =
+        picked && String(picked.phone ?? '').trim()
+          ? `<div class="status-line">${esc(picked.phone)}</div>`
+          : '';
       const pickedBanner = picked
         ? `<div class="card compact" style="margin-bottom:12px;border-color:var(--accent);background:var(--accent-soft);display:flex;justify-content:space-between;align-items:flex-start;gap:10px">
           <div>
             <div class="card-title" style="color:var(--accent);margin-bottom:4px">Выбран клиент</div>
             <div style="font-weight:700">${esc(picked.name)}</div>
-            <div class="status-line">${esc(picked.phone || '')}</div>
+            ${pickedPhoneLine}
           </div>
           <button type="button" class="btn btn-secondary" style="flex-shrink:0;padding:8px 12px" data-clear-client-pick>Сменить</button>
         </div>`
         : '';
 
-      const newFieldsLocked = !!picked ? 'disabled' : '';
+      const searchAndNewClientBlock = picked
+        ? ''
+        : `<label class="label" for="w-search">Найти в базе</label>
+        <input type="text" class="field" inputmode="search" id="w-search" placeholder="Имя или телефон" value="${esc(rawSearch)}" autocomplete="off" enterkeyhint="search" />
+        <div id="w-client-results" class="wizard-client-results" aria-live="polite"></div>
+        <hr class="soft" />
+        <p class="card-title">Новый клиент</p>
+        <input class="field" id="w-new-name" placeholder="Имя" />
+        <input class="field" id="w-new-phone" placeholder="Телефон" inputmode="tel" />
+        <textarea class="field" id="w-new-notes" placeholder="Заметка"></textarea>`;
+
       root.innerHTML = `<div class="content">
         <div class="back-row"><button type="button" class="btn btn-ghost" style="width:auto;padding:8px 12px" data-cancel>Отмена</button></div>
         <div class="step-bar">Шаг 1 из 4 · Клиент</div>
         <h1 style="margin-top:0;font-size:1.35rem">Кто приходит</h1>
         ${pickedBanner}
-        <label class="label" for="w-search">Найти в базе</label>
-        <input type="text" class="field" inputmode="search" id="w-search" placeholder="Имя или телефон" value="${esc(rawSearch)}" autocomplete="off" enterkeyhint="search" />
-        <div id="w-client-results" class="wizard-client-results" aria-live="polite"></div>
-        <hr class="soft" />
-        <p class="card-title">${picked ? 'Новый клиент (нажмите «Сменить», чтобы добавить другого)' : 'Новый клиент'}</p>
-        <input class="field" id="w-new-name" placeholder="Имя" ${newFieldsLocked ? 'disabled' : ''}/>
-        <input class="field" id="w-new-phone" placeholder="Телефон" inputmode="tel" ${newFieldsLocked ? 'disabled' : ''}/>
-        <textarea class="field" id="w-new-notes" placeholder="Заметка" ${newFieldsLocked ? 'disabled' : ''}></textarea>
+        ${searchAndNewClientBlock}
         <div class="wizard-footer"><button type="button" class="btn btn-primary" id="w1-next">Далее</button></div>
       </div>`;
 
-      const searchInput = root.querySelector('#w-search');
-      const resultsEl = root.querySelector('#w-client-results');
+      const searchInput = picked ? null : root.querySelector('#w-search');
+      const resultsEl = picked ? null : root.querySelector('#w-client-results');
 
       /** Обновляет только блок результатов поиска, без замены всего экрана. */
       const renderWizardClientMatches = () => {
@@ -1746,32 +2220,36 @@ async function renderWizard(root, db, go) {
         }, wizardSearchDebounceMs);
       };
 
-      searchInput?.addEventListener('input', () => {
-        scheduleWizardSearch();
-      });
+      if (!picked) {
+        searchInput?.addEventListener('input', () => {
+          scheduleWizardSearch();
+        });
 
-      /** Первичная отрисовка при возврате на шаг с уже введённой строкой. */
-      const initialQ = String(searchInput?.value ?? '').trim();
-      if (initialQ) flushWizardSearch();
-      searchInput?.addEventListener(
-        'blur',
-        () => {
-          flushWizardSearch();
-        },
-        { passive: true }
-      );
+        /** Первичная отрисовка при возврате на шаг с уже введённой строкой. */
+        const initialQ = String(searchInput?.value ?? '').trim();
+        if (initialQ) flushWizardSearch();
+        searchInput?.addEventListener(
+          'blur',
+          () => {
+            flushWizardSearch();
+          },
+          { passive: true }
+        );
 
-      resultsEl?.addEventListener('click', (ev) => {
-        const b = ev.target.closest('[data-pick-client]');
-        if (!b || !resultsEl.contains(b)) return;
-        ev.preventDefault();
-        w.clientId = Number(b.getAttribute('data-pick-client'));
-        saveWizard(w);
-        paint();
-      });
+        resultsEl?.addEventListener('click', (ev) => {
+          const b = ev.target.closest('[data-pick-client]');
+          if (!b || !resultsEl.contains(b)) return;
+          ev.preventDefault();
+          w.clientId = Number(b.getAttribute('data-pick-client'));
+          w.clientPickSource = 'catalog';
+          saveWizard(w);
+          paint();
+        });
+      }
 
       root.querySelector('[data-clear-client-pick]')?.addEventListener('click', () => {
         delete w.clientId;
+        delete w.clientPickSource;
         saveWizard(w);
         paint();
       });
@@ -1780,24 +2258,42 @@ async function renderWizard(root, db, go) {
         go('today');
       });
       root.querySelector('#w1-next')?.addEventListener('click', async () => {
-        flushWizardSearch();
+        if (!picked) flushWizardSearch();
         if (Number(w.clientId) > 0) {
+          const catalogRow = clients.find((c) => Number(c.id) === Number(w.clientId));
+          if (
+            !catalogRow ||
+            !String(catalogRow.phone ?? '').trim()
+          ) {
+            toast('У выбранного клиента не указан номер телефона. Добавьте телефон клиента.');
+            return;
+          }
           w.step = 2;
           saveWizard(w);
           paint();
           return;
         }
-        const name = root.querySelector('#w-new-name')?.value?.trim();
+        const name = String(root.querySelector('#w-new-name')?.value ?? '').trim();
+        const phone = String(root.querySelector('#w-new-phone')?.value ?? '').trim();
+        if (!name && !phone) {
+          toast('Введите имя и номер телефона клиента.');
+          return;
+        }
         if (!name) {
-          toast('Выберите клиента из найденных или добавьте нового');
+          toast('Введите имя клиента.');
+          return;
+        }
+        if (!phone) {
+          toast('Введите номер телефона клиента.');
           return;
         }
         const id = await db.addClient({
           name,
-          phone: root.querySelector('#w-new-phone')?.value?.trim(),
+          phone,
           notes: root.querySelector('#w-new-notes')?.value?.trim(),
         });
         w.clientId = id;
+        w.clientPickSource = 'new';
         w.step = 2;
         saveWizard(w);
         paint();
@@ -2117,7 +2613,13 @@ async function renderWizard(root, db, go) {
     }
 
     if (step === 5) {
-      const tp = F.timeToHourAndQuarter(w.time || '10:00');
+      const dateStr = (w.date || F.todayISO()).split('T')[0];
+      const fallbackTime = F.defaultNewAppointmentTimeHHMM(dateStr);
+      if (w.time == null || String(w.time).trim() === '') {
+        w.time = fallbackTime;
+        saveWizard(w);
+      }
+      const tp = F.timeToHourAndQuarter(w.time);
       const hourOpts = Array.from({ length: 24 }, (_, i) => {
         const sel = i === tp.hours ? ' selected' : '';
         return `<option value="${i}"${sel}>${String(i).padStart(2, '0')}</option>`;
@@ -2202,6 +2704,50 @@ async function renderWizard(root, db, go) {
           completedAt: null,
           notes: '',
         };
+
+        const cid = Number(w.clientId);
+        if (!Number.isFinite(cid) || cid <= 0) {
+          toast('Сначала выберите клиента на первом шаге.');
+          return;
+        }
+        const clientRow = await db.getClient(cid);
+        if (!clientRow) {
+          toast('Клиент не найден. Вернитесь к шагу «Клиент».');
+          return;
+        }
+        const clientNameTrim = String(clientRow.name ?? '').trim();
+        const clientPhoneTrim = String(clientRow.phone ?? '').trim();
+        if (!clientNameTrim && !clientPhoneTrim) {
+          toast('Введите имя и номер телефона клиента.');
+          return;
+        }
+        if (!clientNameTrim) {
+          toast('Введите имя клиента.');
+          return;
+        }
+        if (!clientPhoneTrim) {
+          const phoneMsg =
+            w.clientPickSource === 'new'
+              ? 'Введите номер телефона клиента.'
+              : 'У выбранного клиента не указан номер телефона. Добавьте телефон клиента.';
+          toast(phoneMsg);
+          return;
+        }
+
+        if (F.isAppointmentStartInPastToday(appt.date, appt.time)) {
+          toast('Вы выбрали время, которое уже прошло. Измените время записи.');
+          return;
+        }
+
+        const existing = await db.listAppointments();
+        for (const row of existing) {
+          if (row.status === 'done' || row.status === 'cancelled') continue;
+          if (F.appointmentTimesOverlapSameDay(appt, row)) {
+            toast('На это время уже есть другая запись. Выберите другое время.');
+            return;
+          }
+        }
+
         await db.addAppointment(appt);
         sessionStorage.removeItem(WIZARD_KEY);
         toast('Запись сохранена');
@@ -2213,24 +2759,63 @@ async function renderWizard(root, db, go) {
   await paint();
 }
 
-async function renderComplete(root, db, id, go, refresh) {
+async function renderComplete(root, db, id, go, refresh, meta = {}, backTarget = 'today') {
   const ap = await db.getAppointment(Number(id));
   if (!ap) {
     root.innerHTML = `<div class="content empty-hint">Запись не найдена</div>`;
     return;
   }
   if (ap.status === 'done') {
+    const client =
+      ap.clientId != null ? await db.getClient(Number(ap.clientId)) : null;
+    const clientName = esc(String(client?.name || 'Клиент').trim() || 'Клиент');
+    const phoneTrim = String(client?.phone ?? '').trim();
+    const phoneLine = phoneTrim
+      ? `<p class="status-line">Телефон: ${esc(phoneTrim)}</p>`
+      : `<p class="status-line muted">Телефон не указан</p>`;
+    const svc = esc(String(ap.serviceNameSnapshot || '—'));
+    const whenLine = `${esc(F.formatDateISO(ap.date))} · ${esc(F.formatTime(ap.time))}`;
+    const plannedLabel = esc(F.minutesToLabel(Number(ap.plannedMinutes) || 0));
+    const actMin = Number(ap.actualMinutes);
+    const actualLabel =
+      Number.isFinite(actMin) && actMin > 0
+        ? esc(F.minutesToLabel(actMin))
+        : '—';
+    const matRub = Number(ap.materialCostRub) || 0;
+    const laborRub = Number(ap.laborCostRub) || 0;
+    const fixedRub = Number(ap.orderFixedCostRub) || 0;
+    const totalCogsRub = appointmentTotalCogs(ap);
+    const profitVal = Number(ap.profitRub) || 0;
+    const profitBlock =
+      profitVal >= 0
+        ? `<p class="status-line">Прибыль: <strong>${F.money(profitVal)}</strong></p>`
+        : `<p class="status-line">Убыток: <strong>${F.money(Math.abs(profitVal))}</strong></p>`;
+
     root.innerHTML = `<div class="content">
-      <div class="back-row"><a href="#records" data-back>← Записи</a></div>
-      <h1 style="font-size:1.25rem">Уже завершено</h1>
+      <div class="back-row"><a href="#${backTarget}" data-back>← Назад</a></div>
+      <h1 style="font-size:1.25rem;margin-top:0">Завершённая запись</h1>
       <div class="card">
-        <p>Прибыль: ${F.money(ap.profitRub || 0)}</p>
-        <p class="status-line">Оплачено: ${F.money(ap.receivedRub || 0)} · материалы: ${F.money(ap.materialCostRub || 0)}</p>
+        <p class="status-line"><strong>Клиент:</strong> ${clientName}</p>
+        ${phoneLine}
+        <p class="status-line"><strong>Услуга:</strong> ${svc}</p>
+        <p class="status-line"><strong>Дата и время записи:</strong> ${whenLine}</p>
+        <p class="status-line"><strong>Плановое время:</strong> ${plannedLabel}</p>
+        <p class="status-line"><strong>Фактическое время:</strong> ${actualLabel}</p>
+        <p class="status-line"><strong>Оплачено клиентом:</strong> ${F.money(Number(ap.receivedRub) || 0)}</p>
+      </div>
+      <div class="card">
+        <div class="card-title">Расчёт</div>
+        <p class="status-line">Материалы: ${F.money(matRub)}</p>
+        <p class="status-line">Работа: ${F.money(laborRub)}</p>
+        <p class="status-line">Расходы на заказ: ${F.money(fixedRub)}</p>
+        <p class="status-line" style="margin-top:10px;padding-top:10px;border-top:1px solid var(--line)">
+          Итоговая себестоимость: <strong>${F.money(totalCogsRub)}</strong></p>
+        ${profitBlock}
       </div>
     </div>`;
     root.querySelector('[data-back]')?.addEventListener('click', (e) => {
       e.preventDefault();
-      go('records');
+      go(backTarget);
     });
     return;
   }
@@ -2282,12 +2867,12 @@ async function renderComplete(root, db, id, go, refresh) {
         const valueStr =
           q === '' || q == null || Number(q) === 0 ? '' : String(q);
         const uMat = m.unit || m.baseUnit || 'g';
-        return `<div class="card compact" data-mat-row="${mid}">
-        <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px">
-          <div style="font-weight:600">${esc(m.name)}</div>
+        return `<div class="card compact c-mat-card" data-mat-row="${mid}">
+        <div class="c-mat-card__head">
+          <div class="c-mat-card__title">${esc(m.name)}</div>
           ${
             !plan.some((p) => Number(p.materialId) === mid)
-              ? `<button type="button" class="btn btn-secondary" style="padding:6px 10px;font-size:0.8rem;flex-shrink:0" data-remove-mat="${mid}">✕</button>`
+              ? `<button type="button" class="c-mat-remove" data-remove-mat="${mid}" aria-label="Убрать из списка">×</button>`
               : ''
           }
         </div>
@@ -2354,15 +2939,41 @@ async function renderComplete(root, db, id, go, refresh) {
     mergedInit.push({ materialId: mid, qty: Number(l.qty) || 0 });
   }
   let factLines = mergedInit;
+  const [hourlyDb, fixedDb] = await Promise.all([
+    db.getMeta('masterHourlyRateRub'),
+    db.getMeta('orderFixedCostRub'),
+  ]);
+  const hourlyRate = Math.max(
+    0,
+    Number(hourlyDb ?? meta?.masterHourlyRateRub) || 0
+  );
+  const fixedOrder = Math.max(
+    0,
+    Number(fixedDb ?? meta?.orderFixedCostRub) || 0
+  );
   const pm = ap.plannedMinutes || 120;
   const ah = Math.floor(pm / 60);
   const am = pm % 60;
-  const initialPaid = Number(ap.priceRub) || 0;
-  const initialCost = computeCost(factLines);
-  const initialProfit = initialPaid - initialCost;
+  const payDraftKey = `kosoCompletePaid:${ap.id}`;
+  function initialPaidFieldValue() {
+    const draft = sessionStorage.getItem(payDraftKey);
+    if (draft !== null && draft !== '') return draft;
+    const prep = Number(ap.prepaymentRub);
+    if (prep > 0) return String(Math.round(prep));
+    return '';
+  }
+  const paidFieldValue = initialPaidFieldValue();
+  const initialPaidNum = paidFieldValue === '' ? 0 : Number(paidFieldValue) || 0;
+  const priceListHint = F.money(Number(ap.priceRub) || 0);
+  const initialMatCost = computeCost(factLines);
+  const initialActualMin = F.parseMinutesFromFields(String(ah), String(am));
+  const initialLaborCost = Math.round((initialActualMin / 60) * hourlyRate);
+  const initialTotalCogs = initialMatCost + initialLaborCost + fixedOrder;
+  const initialProfit = initialPaidNum - initialTotalCogs;
+  const initialLabHint = `${initialActualMin} мин × ${F.money(hourlyRate)}/ч`;
 
   root.innerHTML = `<div class="content">
-    <div class="back-row"><a href="#today" data-back>← Назад</a></div>
+    <div class="back-row"><a href="#${backTarget}" data-back>← Назад</a></div>
     <h1 style="font-size:1.25rem;margin-top:0">Завершение записи</h1>
     <p class="muted">${esc(ap.serviceNameSnapshot || '')}</p>
 
@@ -2378,13 +2989,19 @@ async function renderComplete(root, db, id, go, refresh) {
     <div id="c-add-mat-picker" style="display:none;margin-bottom:12px" class="list-gap"></div>
     <div id="c-mats">${linesHtml(factLines)}</div>
 
+    <p class="muted" style="font-size:0.9rem;margin:16px 0 6px;line-height:1.4">Цена по прайсу: ${priceListHint}</p>
     <label class="label" for="c-paid">Оплачено клиентом (всего)</label>
-    <input class="field" id="c-paid" type="number" min="0" step="100" value="${ap.priceRub || 0}" />
+    <input class="field" id="c-paid" type="number" min="0" step="1" value="${esc(paidFieldValue)}" placeholder="0" inputmode="decimal" />
 
     <div class="card" id="c-sum">
       <div class="card-title">Расчёт</div>
-      <p class="status-line">Материалы (себестоимость): <strong id="c-cost">${F.money(initialCost)}</strong></p>
-      <p class="status-line">Прибыль: <strong id="c-profit" class="${
+      <p class="status-line">Материалы: <strong id="c-cost-mat">${F.money(initialMatCost)}</strong></p>
+      <p class="status-line">Работа (часы × ставка): <strong id="c-cost-lab">${F.money(initialLaborCost)}</strong>
+        <span id="c-lab-detail" class="muted" style="font-size:0.82rem"> (${initialLabHint})</span></p>
+      <p class="status-line">Расходы на заказ: <strong id="c-cost-fix">${F.money(fixedOrder)}</strong></p>
+      <p class="status-line" style="margin-top:10px;padding-top:10px;border-top:1px solid var(--line)">
+        Итоговая себестоимость: <strong id="c-cost-total">${F.money(initialTotalCogs)}</strong></p>
+      <p class="status-line">Прибыль (оплата − себестоимость): <strong id="c-profit" class="${
         initialProfit >= 0 ? 'profit-pos' : 'profit-neg'
       }">${F.money(initialProfit)}</strong></p>
     </div>
@@ -2395,12 +3012,28 @@ async function renderComplete(root, db, id, go, refresh) {
   const paidEl = root.querySelector('#c-paid');
   const matsRoot = root.querySelector('#c-mats');
 
+  function readActualMinutesFromDom() {
+    return F.parseMinutesFromFields(
+      root.querySelector('#c-act-h').value,
+      root.querySelector('#c-act-m').value
+    );
+  }
+
   function recalc() {
     factLines = readFactLinesFromDom();
-    const cost = computeCost(factLines);
+    const matCost = computeCost(factLines);
+    const actualMin = readActualMinutesFromDom();
+    const laborCost = Math.round((actualMin / 60) * hourlyRate);
+    const totalCogs = matCost + laborCost + fixedOrder;
     const paid = Number(paidEl.value) || 0;
-    root.querySelector('#c-cost').textContent = F.money(cost);
-    const prof = paid - cost;
+    root.querySelector('#c-cost-mat').textContent = F.money(matCost);
+    root.querySelector('#c-cost-lab').textContent = F.money(laborCost);
+    const detailEl = root.querySelector('#c-lab-detail');
+    if (detailEl)
+      detailEl.textContent = ` (${actualMin} мин × ${F.money(hourlyRate)}/ч)`;
+    root.querySelector('#c-cost-fix').textContent = F.money(fixedOrder);
+    root.querySelector('#c-cost-total').textContent = F.money(totalCogs);
+    const prof = paid - totalCogs;
     const pel = root.querySelector('#c-profit');
     pel.textContent = F.money(prof);
     pel.className = prof >= 0 ? 'profit-pos' : 'profit-neg';
@@ -2414,6 +3047,8 @@ async function renderComplete(root, db, id, go, refresh) {
   matsRoot?.addEventListener('input', (e) => {
     if (e.target?.tagName === 'INPUT') recalc();
   });
+  root.querySelector('#c-act-h')?.addEventListener('input', recalc);
+  root.querySelector('#c-act-m')?.addEventListener('input', recalc);
   matsRoot?.addEventListener('click', (e) => {
     const b = e.target.closest('[data-remove-mat]');
     if (!b) return;
@@ -2424,7 +3059,10 @@ async function renderComplete(root, db, id, go, refresh) {
     recalc();
   });
 
-  paidEl?.addEventListener('input', recalc);
+  paidEl?.addEventListener('input', () => {
+    sessionStorage.setItem(payDraftKey, paidEl.value);
+    recalc();
+  });
 
   root.querySelector('#c-add-material')?.addEventListener('click', () => {
     const picker = root.querySelector('#c-add-mat-picker');
@@ -2453,26 +3091,31 @@ async function renderComplete(root, db, id, go, refresh) {
 
   root.querySelector('[data-back]')?.addEventListener('click', (e) => {
     e.preventDefault();
-    go('today');
+    go(backTarget);
   });
 
   root.querySelector('#c-done')?.addEventListener('click', async () => {
     factLines = readFactLinesFromDom();
-    const actualMinutes = F.parseMinutesFromFields(
-      root.querySelector('#c-act-h').value,
-      root.querySelector('#c-act-m').value
-    );
+    const actualMinutes = readActualMinutesFromDom();
     const next = factLines.filter((l) => (Number(l.qty) || 0) > 0 && allById[Number(l.materialId)]);
     const paid = Number(paidEl.value) || 0;
-    const materialCostRub = computeCost(next);
-    const profitRub = paid - materialCostRub;
+    const materialsCostRub = computeCost(next);
+    const laborCostRub = Math.round((actualMinutes / 60) * hourlyRate);
+    const orderFixedCostRub = fixedOrder;
+    const totalCogsRub = materialsCostRub + laborCostRub + orderFixedCostRub;
+    const profitRub = paid - totalCogsRub;
     await db.completeAppointment(ap.id, {
       actualMinutes,
       materialsFact: next,
       receivedRub: paid,
-      materialCostRub,
+      materialsCostRub,
+      laborCostRub,
+      orderFixedCostRub,
+      totalCogsRub,
+      materialCostRub: materialsCostRub,
       profitRub,
     });
+    sessionStorage.removeItem(payDraftKey);
     toast('Списание выполнено');
     await refresh();
     go('today');

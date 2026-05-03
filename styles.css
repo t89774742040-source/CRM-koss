@@ -117,6 +117,54 @@ a {
   padding: 12px 14px;
 }
 
+/* Завершение записи: карточка материала (название + круглая «×», поле ниже) */
+.c-mat-card__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 10px;
+  min-width: 0;
+}
+
+.c-mat-card__title {
+  flex: 1;
+  min-width: 0;
+  font-weight: 600;
+  line-height: 1.35;
+  font-size: 1rem;
+  word-break: break-word;
+  overflow-wrap: break-word;
+}
+
+button.c-mat-remove {
+  flex-shrink: 0;
+  width: 32px;
+  height: 32px;
+  min-width: 32px;
+  min-height: 32px;
+  padding: 0;
+  margin: 0;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: var(--card);
+  color: var(--text);
+  font-size: 1.25rem;
+  line-height: 1;
+  font-weight: 500;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  box-sizing: border-box;
+  box-shadow: none;
+}
+
+button.c-mat-remove:active {
+  opacity: 0.85;
+  background: var(--accent-soft);
+}
+
 .card-title {
   margin: 0 0 8px;
   font-size: 0.85rem;
@@ -586,6 +634,88 @@ button.mat-pick-item:active {
   border-color: var(--warn);
 }
 
+/* Удаление записи: компактная корзина, удобная зона тапа */
+.record-card__head-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.appt-delete-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  margin: 0;
+  padding: 0;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  line-height: 1;
+  transition: color 0.15s ease, background 0.15s ease;
+}
+
+.appt-delete-btn__ico {
+  display: block;
+  font-size: 17px;
+  line-height: 1;
+}
+
+.appt-delete-btn:hover {
+  color: #b91c1c;
+  background: rgba(248, 113, 113, 0.12);
+}
+
+.appt-delete-btn:active {
+  color: #991b1b;
+  background: rgba(248, 113, 113, 0.18);
+}
+
+/* Модальное подтверждение (замена window.confirm во встроенном превью) */
+.ui-confirm {
+  position: fixed;
+  inset: 0;
+  z-index: 10050;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: max(16px, env(safe-area-inset-bottom));
+}
+
+.ui-confirm__backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(17, 24, 39, 0.5);
+}
+
+.ui-confirm__card {
+  position: relative;
+  width: 100%;
+  max-width: 400px;
+  margin: 16px;
+  padding: 18px;
+}
+
+.ui-confirm__text {
+  margin: 0 0 18px;
+  font-size: 0.95rem;
+  line-height: 1.5;
+  color: var(--text);
+  white-space: pre-line;
+}
+
+.ui-confirm__actions {
+  display: flex;
+  gap: 10px;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+}
+
 /* Фокус: обводка только при навигации с клавиатуры, не при каждом клике мышью */
 :focus:not(:focus-visible) {
   outline: none;
@@ -601,4 +731,38 @@ button.mat-pick-item:active {
 .stat-grid .stat-big {
   -webkit-user-select: none;
   user-select: none;
+}
+
+/* Экран «Приход материала»: переключатель «из списка» / «новый» */
+.pm-mode-card {
+  margin-bottom: 16px;
+}
+.pm-mode-tabs {
+  display: flex;
+  gap: 10px;
+  margin-top: 12px;
+}
+.pm-mode-tab {
+  flex: 1;
+  min-height: 48px;
+  padding: 12px 10px;
+  font-size: 0.9rem;
+  font-weight: 600;
+  line-height: 1.28;
+  text-align: center;
+  border: 2px solid var(--line);
+  border-radius: 12px;
+  background: #fff;
+  color: var(--text);
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  transition:
+    border-color 0.15s ease,
+    background 0.15s ease,
+    color 0.15s ease;
+}
+.pm-mode-tab.is-active {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent);
 }
