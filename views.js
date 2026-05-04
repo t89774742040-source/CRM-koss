@@ -102,6 +102,94 @@ function appointmentRowIsFinished(a) {
   return Number.isFinite(t) && t > 0;
 }
 
+/** Перенос только запланированной записи: без фактического начала и окончания. */
+function appointmentCanReschedule(a) {
+  if (!a || a.status === 'cancelled') return false;
+  if (appointmentRowIsFinished(a)) return false;
+  const started = Number(a.actualStartAt);
+  if (Number.isFinite(started) && started > 0) return false;
+  return true;
+}
+
+function appointmentDateKeyIso(dateField) {
+  return String(dateField ?? '').split('T')[0].trim();
+}
+
+/** Активные записи на день для подсказки «занято» (без завершённых и отменённых). */
+function appointmentsOnDayActive(appointments, dateKey, excludeAppointmentId) {
+  return appointments.filter((a) => {
+    if (appointmentDateKeyIso(a.date) !== dateKey) return false;
+    if (a.status === 'done' || a.status === 'cancelled') return false;
+    if (excludeAppointmentId != null && Number(a.id) === Number(excludeAppointmentId)) return false;
+    return true;
+  });
+}
+
+/** HTML-тело списка занятых интервалов на дату (строки уже экранированы). */
+async function htmlBusyDaySlotsBody(db, dateKey, excludeAppointmentId) {
+  const [appointments, clients] = await Promise.all([db.listAppointments(), db.listClients()]);
+  const cmap = Object.fromEntries(clients.map((c) => [Number(c.id), c]));
+  const day = appointmentsOnDayActive(appointments, dateKey, excludeAppointmentId);
+  if (!day.length) {
+    return `<p class="muted" style="margin:0;font-size:0.9rem;line-height:1.45">На этот день записей пока нет.</p>`;
+  }
+  day.sort((a, b) => {
+    const ma = F.timeHHMMToMinutes(a.time);
+    const mb = F.timeHHMMToMinutes(b.time);
+    if (ma != null && mb != null) return ma - mb;
+    return String(a.time || '').localeCompare(String(b.time || ''), 'ru');
+  });
+  const parts = [];
+  for (const a of day) {
+    const w = F.appointmentWindowMs(a.date, a.time, a.plannedMinutes);
+    if (!w) continue;
+    const t0 = F.msToClockHHMM(w.startMs);
+    const t1 = F.msToClockHHMM(w.endMs);
+    const svc = String(a.serviceNameSnapshot || 'Услуга').trim() || 'Услуга';
+    const c = cmap[Number(a.clientId)];
+    const nm = String(c?.name || 'Клиент').trim() || 'Клиент';
+    parts.push(
+      `<p class="status-line" style="margin:5px 0;line-height:1.4">${esc(t0)}–${esc(t1)} · ${esc(svc)} · ${esc(nm)}</p>`
+    );
+  }
+  return parts.length ? parts.join('') : `<p class="muted" style="margin:0;font-size:0.9rem;line-height:1.45">На этот день записей пока нет.</p>`;
+}
+
+/** Среди пересечений с кандидатом — запись с самым поздним окончанием (для подсказки «после …»). */
+function pickConflictRowWithLatestEnd(candidate, appointments, excludeAppointmentId) {
+  let best = null;
+  let bestEnd = -1;
+  for (const row of appointments) {
+    if (excludeAppointmentId != null && Number(row.id) === Number(excludeAppointmentId)) continue;
+    if (row.status === 'done' || row.status === 'cancelled') continue;
+    if (!F.appointmentTimesOverlapSameDay(candidate, row)) continue;
+    const win = F.appointmentWindowMs(row.date, row.time, row.plannedMinutes);
+    if (!win) continue;
+    if (win.endMs > bestEnd) {
+      bestEnd = win.endMs;
+      best = row;
+    }
+  }
+  return best;
+}
+
+function toastOverlapFromConflictRow(conflict) {
+  if (!conflict) {
+    toast('На это время уже есть другая запись. Выберите другое время.');
+    return;
+  }
+  const w = F.appointmentWindowMs(conflict.date, conflict.time, conflict.plannedMinutes);
+  if (!w) {
+    toast('На это время уже есть другая запись. Выберите другое время.');
+    return;
+  }
+  const t0 = F.msToClockHHMM(w.startMs);
+  const t1 = F.msToClockHHMM(w.endMs);
+  toast(
+    `На это время уже есть запись: ${t0}–${t1}. Выберите время после ${t1} или другой день.`
+  );
+}
+
 /** Полная себестоимость визита; у старых записей только материалы в materialCostRub. */
 function appointmentTotalCogs(a) {
   const t = Number(a?.totalCogsRub);
@@ -523,8 +611,13 @@ async function renderToday(db, meta, go) {
           <div class="status-line">План: ${esc(F.minutesToLabel(a.plannedMinutes))} · Сложн.: ${a.difficulty || '—'}</div>
           ${
             a.status !== 'done' && a.status !== 'cancelled'
-              ? `<div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap">
+              ? `<div class="record-card__appt-actions">
               <button type="button" class="btn btn-primary" style="padding:10px" data-done="${a.id}">Завершить</button>
+              ${
+                appointmentCanReschedule(a)
+                  ? `<button type="button" class="btn btn-reschedule" data-reschedule-appt="${a.id}">Перенести</button>`
+                  : ''
+              }
             </div>`
               : a.status === 'done'
                 ? `<div class="status-line">Оплачено: ${F.money(a.receivedRub || 0)} · Прибыль: ${F.money(a.profitRub || 0)}</div>`
@@ -624,6 +717,145 @@ function attachAppointmentDeleteButtons(root, db, go, refresh) {
   });
 }
 
+function openRescheduleAppointmentModal(ap, db, refresh, go) {
+  const dateVal = String(ap.date || F.todayISO()).split('T')[0].trim() || F.todayISO();
+  const tp = F.timeToHourAndQuarter(ap.time);
+  const hourOpts = Array.from({ length: 24 }, (_, i) => {
+    const sel = i === tp.hours ? ' selected' : '';
+    return `<option value="${i}"${sel}>${String(i).padStart(2, '0')}</option>`;
+  }).join('');
+  const minuteOpts = [0, 15, 30, 45]
+    .map((v) => {
+      const sel = v === tp.quarterMin ? ' selected' : '';
+      return `<option value="${v}"${sel}>${String(v).padStart(2, '0')}</option>`;
+    })
+    .join('');
+
+  const wrap = document.createElement('div');
+  wrap.className = 'mat-pick-sheet is-open';
+  wrap.setAttribute('role', 'dialog');
+  wrap.setAttribute('aria-modal', 'true');
+  wrap.setAttribute('aria-labelledby', 'rs-modal-title');
+  wrap.innerHTML = `
+    <div class="mat-pick-sheet-inner card" style="max-width: 420px; margin: auto 0; background: var(--card)">
+      <div class="mat-pick-head">
+        <h2 id="rs-modal-title" style="margin: 0; font-size: 1.15rem">Перенос записи</h2>
+      </div>
+      <label class="label" for="rs-date">Новая дата</label>
+      <input class="field" id="rs-date" type="date" value="${esc(dateVal)}" />
+      <p class="card-title" style="margin-top: 14px">Новое время</p>
+      <p class="muted" style="font-size: 0.84rem; margin: 0 0 10px; line-height: 1.4">Часы 00–23, минуты: 00, 15, 30 или 45.</p>
+      <div class="row" style="align-items: flex-end">
+        <div style="flex: 1">
+          <label class="label" for="rs-th">Часы</label>
+          <select class="field" id="rs-th">${hourOpts}</select>
+        </div>
+        <div style="flex: 1">
+          <label class="label" for="rs-tm">Минуты</label>
+          <select class="field" id="rs-tm">${minuteOpts}</select>
+        </div>
+      </div>
+      <div class="card compact" style="margin-top: 12px">
+        <div class="card-title" style="font-size: 0.95rem">Занято в этот день</div>
+        <div id="rs-busy-slots-body"></div>
+      </div>
+      <div style="display: flex; gap: 10px; flex-wrap: wrap; margin-top: 18px">
+        <button type="button" class="btn btn-secondary" data-rs-cancel style="flex: 1; min-width: 120px">Отмена</button>
+        <button type="button" class="btn btn-primary" data-rs-save style="flex: 1; min-width: 120px">Сохранить перенос</button>
+      </div>
+    </div>
+  `;
+
+  const close = () => {
+    document.removeEventListener('keydown', onKey);
+    wrap.remove();
+  };
+
+  const onKey = (ev) => {
+    if (ev.key === 'Escape') close();
+  };
+
+  document.addEventListener('keydown', onKey);
+  wrap.addEventListener('click', (e) => {
+    if (e.target === wrap) close();
+  });
+  const rsDateInput = wrap.querySelector('#rs-date');
+  const rsBusyBody = wrap.querySelector('#rs-busy-slots-body');
+  const reloadRsBusy = async () => {
+    const dk = appointmentDateKeyIso(rsDateInput?.value || dateVal);
+    if (rsBusyBody) rsBusyBody.innerHTML = await htmlBusyDaySlotsBody(db, dk, ap.id);
+  };
+  rsDateInput?.addEventListener('change', () => {
+    void reloadRsBusy();
+  });
+
+  wrap.querySelector('[data-rs-cancel]')?.addEventListener('click', close);
+  wrap.querySelector('[data-rs-save]')?.addEventListener('click', async () => {
+    const dateStr = wrap.querySelector('#rs-date')?.value?.trim() || '';
+    const timeStr = F.hourMinuteToHHMM(
+      wrap.querySelector('#rs-th')?.value,
+      wrap.querySelector('#rs-tm')?.value
+    );
+    if (!dateStr) {
+      toast('Укажите дату.');
+      return;
+    }
+    const fresh = await db.getAppointment(Number(ap.id));
+    if (!fresh || !appointmentCanReschedule(fresh)) {
+      toast('Запись больше нельзя перенести.');
+      close();
+      await refresh();
+      const cur = (location.hash.slice(1) || 'today').split('?')[0];
+      go(cur);
+      return;
+    }
+    if (F.isAppointmentStartInPastToday(dateStr, timeStr)) {
+      toast('Вы выбрали время, которое уже прошло. Измените время записи.');
+      return;
+    }
+    const candidate = { ...fresh, date: dateStr, time: timeStr };
+    const existing = await db.listAppointments();
+    const conflictRow = pickConflictRowWithLatestEnd(candidate, existing, fresh.id);
+    if (conflictRow) {
+      toastOverlapFromConflictRow(conflictRow);
+      return;
+    }
+    await db.putAppointment({ ...fresh, date: dateStr, time: timeStr });
+    close();
+    await refresh();
+    const cur = (location.hash.slice(1) || 'today').split('?')[0];
+    go(cur);
+    toast('Запись перенесена.');
+  });
+
+  document.body.appendChild(wrap);
+  void reloadRsBusy();
+  requestAnimationFrame(() => wrap.querySelector('#rs-date')?.focus());
+}
+
+function attachRescheduleButtons(root, db, go, refresh) {
+  root.querySelectorAll('[data-reschedule-appt]').forEach((btn) => {
+    btn.addEventListener(
+      'click',
+      (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const id = Number(btn.getAttribute('data-reschedule-appt'));
+        if (!id) return;
+        void (async () => {
+          const row = await db.getAppointment(id);
+          if (!row || !appointmentCanReschedule(row)) {
+            toast('Запись больше нельзя перенести.');
+            return;
+          }
+          openRescheduleAppointmentModal(row, db, refresh, go);
+        })();
+      },
+      true
+    );
+  });
+}
+
 export function attachToday(shell, db, go, refresh) {
   const root = shell.querySelector('#app-root') || shell;
   root.querySelector('#open-settings')?.addEventListener('click', () => go('settings'));
@@ -646,6 +878,7 @@ export function attachToday(shell, db, go, refresh) {
     });
   });
   attachAppointmentDeleteButtons(root, db, go, refresh);
+  attachRescheduleButtons(root, db, go, refresh);
   attachServiceBlock(root, db, go, refresh);
 }
 
@@ -726,6 +959,13 @@ async function renderRecords(db, go) {
           </div>
           <div style="margin-top:8px;font-weight:600">${esc(a.serviceNameSnapshot || '')}</div>
           <div class="status-line">${F.money(a.priceRub || 0)} · сложн. ${a.difficulty || '—'}</div>
+          ${
+            appointmentCanReschedule(a)
+              ? `<div style="margin-top:8px">
+              <button type="button" class="btn btn-reschedule" data-reschedule-appt="${a.id}">Перенести</button>
+            </div>`
+              : ''
+          }
         </article>`;
         })
         .join('')
@@ -741,11 +981,12 @@ export function attachRecords(shell, db, go, refresh) {
   const root = shell.querySelector('#app-root') || shell;
   root.querySelectorAll('[data-rec]').forEach((el) => {
     el.addEventListener('click', (e) => {
-      if (e.target.closest('.appt-delete-btn')) return;
+      if (e.target.closest('button')) return;
       go(`complete-${el.getAttribute('data-rec')}?from=records`);
     });
   });
   attachAppointmentDeleteButtons(root, db, go, refresh);
+  attachRescheduleButtons(root, db, go, refresh);
 }
 
 async function renderClients(db, go) {
@@ -964,6 +1205,10 @@ export function attachClientDetail(shell, db, go, id) {
     }
     if (!phone) {
       toast('Введите номер телефона клиента.');
+      return;
+    }
+    if (!F.clientPhoneHasEnoughDigits(phone)) {
+      toast('Введите корректный номер телефона.');
       return;
     }
     try {
@@ -1814,15 +2059,11 @@ async function renderServices(db) {
   );
   const cards = services
     .map((s) => {
-      const diff =
-        Number(s.defaultDifficulty) >= 1 && Number(s.defaultDifficulty) <= 5
-          ? s.defaultDifficulty
-          : '—';
       return `<div class="card sv-price-card">
         <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px">
           <div style="flex:1;min-width:0">
             <div style="font-weight:700">${esc(s.name)}</div>
-            <div class="status-line">${F.money(s.basePrice)} · ${F.minutesToLabel(s.plannedMinutes)} · сложность ${esc(String(diff))}</div>
+            <div class="status-line">${F.money(s.basePrice)} · ${F.minutesToLabel(s.plannedMinutes)}</div>
             ${s.note ? `<p class="status-line" style="margin-top:6px">${esc(s.note)}</p>` : ''}
           </div>
           <button type="button" class="icon-btn" aria-label="Удалить из прайса" data-sv-del="${s.id}">🗑️</button>
@@ -1905,15 +2146,6 @@ async function renderAddService() {
       <div style="flex:1"><label class="label" for="sv-ph">Часы</label><input class="field" id="sv-ph" type="number" min="0" value="2" /></div>
       <div style="flex:1"><label class="label" for="sv-pm">Минуты</label><input class="field" id="sv-pm" type="number" min="0" step="5" value="0" /></div>
     </div>
-    <p class="card-title">Базовая сложность</p>
-    <div class="difficulty-scale" id="sv-diff">
-      ${[1, 2, 3, 4, 5]
-        .map(
-          (n) =>
-            `<button type="button" class="${n === 2 ? 'active' : ''}" data-sv-d="${n}">${n}</button>`
-        )
-        .join('')}
-    </div>
     <label class="label" for="sv-note">Комментарий</label>
     <textarea class="field" id="sv-note" placeholder="Необязательно"></textarea>
     <button type="button" class="btn btn-primary" style="margin-top:8px" id="sv-save">Сохранить в прайс</button>
@@ -1924,19 +2156,6 @@ export function attachAddService(shell, db, go, refresh) {
   const root = shell.querySelector('#app-root') || shell;
   const qs = location.hash.includes('?') ? location.hash.split('?')[1] : '';
   const ret = new URLSearchParams(qs).get('return');
-
-  let difficulty = 2;
-  root.querySelector('#sv-diff')?.querySelectorAll('[data-sv-d]').forEach((b) => {
-    b.addEventListener('click', () => {
-      difficulty = Number(b.getAttribute('data-sv-d'));
-      root.querySelector('#sv-diff').querySelectorAll('[data-sv-d]').forEach((x) => {
-        x.classList.toggle(
-          'active',
-          Number(x.getAttribute('data-sv-d')) === difficulty
-        );
-      });
-    });
-  });
 
   root.querySelector('[data-sv-back]')?.addEventListener('click', () => {
     go(ret === 'new' ? 'new' : 'services');
@@ -1960,7 +2179,7 @@ export function attachAddService(shell, db, go, refresh) {
       name,
       basePrice: price,
       plannedMinutes,
-      defaultDifficulty: difficulty,
+      defaultDifficulty: 1,
       note: root.querySelector('#sv-note').value.trim(),
     });
     toast('Услуга сохранена');
@@ -2153,7 +2372,7 @@ function saveWizard(w) {
 
 async function renderWizard(root, db, go) {
   let w = loadWizard();
-  const clients = await db.listClients();
+  let clients = await db.listClients();
   /** Перечитываем при каждом paint(), чтобы после правок прайса список в мастере не устаревал. */
   let services = await db.listServices();
   let materials = await db.listMaterials();
@@ -2177,17 +2396,14 @@ async function renderWizard(root, db, go) {
     const name = esc(wObj.serviceNameSnapshot || '—');
     const price = F.money(wObj.priceRub || 0);
     const timeLabel = esc(F.minutesToLabel(Number(wObj.plannedMinutes) || 0));
-    const rd = Number(wObj.difficulty);
-    const diff = Number.isFinite(rd) && rd >= 1 && rd <= 5 ? rd : 1;
     const editBtn = withEditBtn
-      ? `<button type="button" class="btn btn-secondary" style="width:100%;margin-top:10px" id="w-open-adjust-service">Изменить цену/время</button>`
+      ? `<button type="button" class="btn btn-secondary" style="width:100%;margin-top:10px" id="w-open-adjust-service">Добавить наценку / время</button>`
       : '';
     return `<div class="card compact" style="margin-bottom:14px;background:var(--accent-soft);border-color:var(--accent)">
       <div class="card-title" style="margin-bottom:6px;color:var(--accent)">Услуга в записи</div>
       <p class="status-line" style="margin:4px 0">Услуга: ${name}</p>
       <p class="status-line" style="margin:4px 0">Цена: ${price}</p>
       <p class="status-line" style="margin:4px 0">Время: ${timeLabel}</p>
-      <p class="status-line" style="margin:4px 0">Сложность: ${esc(String(diff))}</p>
       ${editBtn}
     </div>`;
   }
@@ -2199,6 +2415,7 @@ async function renderWizard(root, db, go) {
     clearTimeout(wizardClientSearchTimer);
     wizardClientSearchTimer = null;
 
+    clients = await db.listClients();
     services = await db.listServices();
     materials = await db.listMaterials();
 
@@ -2214,44 +2431,69 @@ async function renderWizard(root, db, go) {
       (Number(w.adjustReturnStep) === 4 || Number(w.adjustReturnStep) === 5)
     ) {
       const retStep = Number(w.adjustReturnStep);
-      const da = Number(w.difficulty);
-      const d = Number.isFinite(da) && da >= 1 && da <= 5 ? Math.round(da) : 2;
-      const planned = Number(w.plannedMinutes) || 120;
-      const phInit = Math.floor(planned / 60);
-      const pmInit = planned % 60;
+      let baseP = 0;
+      let baseM = 0;
+      let baseName = String(w.serviceNameSnapshot || '—');
+      if (Number(w.serviceId) > 0 && w.catalogServicePicked) {
+        const sRow = await db.getService(Number(w.serviceId));
+        if (sRow) {
+          baseP = Number(sRow.basePrice) || 0;
+          baseM = Math.max(0, Number(sRow.plannedMinutes) || 0);
+          baseName = String(sRow.name || baseName).trim() || baseName;
+          w.serviceBasePriceRub = baseP;
+          w.serviceBasePlannedMinutes = baseM;
+          saveWizard(w);
+        }
+      } else {
+        baseP = Number(w.serviceBasePriceRub) || 0;
+        baseM = Math.max(0, Number(w.serviceBasePlannedMinutes) || 0);
+      }
+      const curP = Number(w.priceRub) || 0;
+      const curMin = Math.max(0, Number(w.plannedMinutes) || 0);
+      const surInit = Math.max(0, Math.round(curP - baseP));
+      const exInit = Math.max(0, Math.round(curMin - baseM));
+      const noteInit = String(w.serviceAdjustNote ?? '');
+
       root.innerHTML = `<div class="content">
         <div class="back-row"><button type="button" class="btn btn-ghost" style="width:auto" data-adjust-cancel>Отмена</button></div>
-        <div class="step-bar">Цена и время визита</div>
-        <h1 style="margin-top:0;font-size:1.35rem">Изменить параметры услуги</h1>
-        <p class="muted" style="line-height:1.45">При необходимости скорректируйте сложность, длительность и цену именно для этой записи. Шаблон в прайсе не меняется.</p>
-        <p class="card-title">Сложность (1–5)</p>
-        <div class="difficulty-scale" id="w-adj-diff">
-          ${[1, 2, 3, 4, 5]
-            .map(
-              (n) =>
-                `<button type="button" class="${n === d ? 'active' : ''}" data-adjd="${n}">${n}</button>`
-            )
-            .join('')}
+        <div class="step-bar">Корректировка записи</div>
+        <h1 style="margin-top:0;font-size:1.35rem">Корректировка записи</h1>
+        <div class="card compact" style="margin-bottom:12px;background:var(--bg)">
+          <div class="card-title">База по прайсу</div>
+          <p class="status-line">Услуга: ${esc(baseName)}</p>
+          <p class="status-line">Базовая цена: ${F.money(baseP)}</p>
+          <p class="status-line">Базовое время: ${esc(F.minutesToLabel(baseM))}</p>
         </div>
-        <label class="label" for="w-adj-ph">Плановое время</label>
-        <div class="row">
-          <input class="field" id="w-adj-ph" type="number" min="0" step="1" placeholder="Часы" value="${phInit}" />
-          <input class="field" id="w-adj-pm" type="number" min="0" step="5" placeholder="Мин" value="${pmInit}" />
+        <p class="card-title" style="margin-top:4px">Если работа сложнее обычной</p>
+        <label class="label" for="w-adj-surcharge">Наценка за сложность, ₽</label>
+        <input class="field" id="w-adj-surcharge" type="number" min="0" step="100" value="${surInit}" />
+        <label class="label" for="w-adj-extra-min">Дополнительное время, мин</label>
+        <input class="field" id="w-adj-extra-min" type="number" min="0" step="5" value="${exInit}" />
+        <label class="label" for="w-adj-note">Причина / комментарий</label>
+        <textarea class="field" id="w-adj-note" rows="3" placeholder="Кратко опишите, что усложняет работу">${esc(noteInit)}</textarea>
+        <p class="muted" style="font-size:0.8rem;margin:-6px 0 14px;line-height:1.45">Например: густые волосы, длина ниже пояса, много мелких деталей, исправление чужой работы.</p>
+        <div class="card compact" style="margin-top:4px">
+          <div class="card-title">Итого по записи</div>
+          <p class="status-line">Цена: <strong id="w-adj-total-price">${F.money(baseP + surInit)}</strong></p>
+          <p class="status-line">Плановое время: <strong id="w-adj-total-time">${esc(F.minutesToLabel(baseM + exInit))}</strong></p>
         </div>
-        <label class="label" for="w-adj-price">Цена услуги, ₽</label>
-        <input class="field" id="w-adj-price" type="number" min="0" step="100" value="${Number(w.priceRub) || 0}" />
         <div class="wizard-footer"><button type="button" class="btn btn-primary" id="w-adjust-done">Готово</button></div>
       </div>`;
-      root.querySelector('#w-adj-diff')?.querySelectorAll('[data-adjd]').forEach((btn) => {
-        btn.addEventListener('click', () => {
-          const n = Number(btn.getAttribute('data-adjd'));
-          w.difficulty = n;
-          saveWizard(w);
-          root.querySelector('#w-adj-diff').querySelectorAll('[data-adjd]').forEach((x) => {
-            x.classList.toggle('active', Number(x.getAttribute('data-adjd')) === n);
-          });
-        });
-      });
+
+      const recalcAdjustTotals = () => {
+        const sur = Math.max(0, Number(root.querySelector('#w-adj-surcharge')?.value) || 0);
+        const exM = Math.max(0, Number(root.querySelector('#w-adj-extra-min')?.value) || 0);
+        const tp = baseP + sur;
+        const tm = baseM + exM;
+        const elP = root.querySelector('#w-adj-total-price');
+        const elT = root.querySelector('#w-adj-total-time');
+        if (elP) elP.textContent = F.money(tp);
+        if (elT) elT.textContent = F.minutesToLabel(tm);
+      };
+
+      root.querySelector('#w-adj-surcharge')?.addEventListener('input', recalcAdjustTotals);
+      root.querySelector('#w-adj-extra-min')?.addEventListener('input', recalcAdjustTotals);
+
       root.querySelector('[data-adjust-cancel]')?.addEventListener('click', () => {
         delete w.adjustingService;
         delete w.adjustReturnStep;
@@ -2259,17 +2501,13 @@ async function renderWizard(root, db, go) {
         paint();
       });
       root.querySelector('#w-adjust-done')?.addEventListener('click', () => {
-        const adjD = Number(
-          root.querySelector('#w-adj-diff .active')?.getAttribute('data-adjd')
-        );
-        w.difficulty =
-          Number.isFinite(adjD) && adjD >= 1 && adjD <= 5 ? adjD : Number(w.difficulty) || 2;
-        const pm = F.parseMinutesFromFields(
-          root.querySelector('#w-adj-ph').value,
-          root.querySelector('#w-adj-pm').value
-        );
-        w.plannedMinutes = pm || Number(w.plannedMinutes) || 120;
-        w.priceRub = Number(root.querySelector('#w-adj-price').value) || 0;
+        const basePr = Number(w.serviceBasePriceRub) || 0;
+        const baseMn = Math.max(0, Number(w.serviceBasePlannedMinutes) || 0);
+        const sur = Math.max(0, Number(root.querySelector('#w-adj-surcharge')?.value) || 0);
+        const exM = Math.max(0, Number(root.querySelector('#w-adj-extra-min')?.value) || 0);
+        w.priceRub = basePr + sur;
+        w.plannedMinutes = baseMn + exM;
+        w.serviceAdjustNote = String(root.querySelector('#w-adj-note')?.value || '').trim();
         delete w.adjustingService;
         delete w.adjustReturnStep;
         w.step = retStep;
@@ -2289,20 +2527,32 @@ async function renderWizard(root, db, go) {
         delete w.clientId;
         saveWizard(w);
       }
-      const picked = clients.find((c) => Number(c.id) === Number(w.clientId)) || null;
+      let picked = clients.find((c) => Number(c.id) === Number(w.clientId)) || null;
+      if (picked) {
+        const phCheck = String(picked.phone ?? '').trim();
+        if (phCheck && !F.clientPhoneHasEnoughDigits(phCheck)) {
+          toast(
+            'В карточке клиента слишком короткий номер. Исправьте его в разделе «Клиенты» или выберите другого клиента.'
+          );
+          delete w.clientId;
+          delete w.clientPickSource;
+          saveWizard(w);
+          picked = null;
+        }
+      }
 
       const pickedPhoneLine =
         picked && String(picked.phone ?? '').trim()
           ? `<div class="status-line">${esc(picked.phone)}</div>`
           : '';
       const pickedBanner = picked
-        ? `<div class="card compact" style="margin-bottom:12px;border-color:var(--accent);background:var(--accent-soft);display:flex;justify-content:space-between;align-items:flex-start;gap:10px">
-          <div>
+        ? `<div class="card compact wizard-picked-client" style="margin-bottom:12px;border-color:var(--accent);background:var(--accent-soft)">
+          <div class="wizard-picked-client__main">
             <div class="card-title" style="color:var(--accent);margin-bottom:4px">Выбран клиент</div>
             <div style="font-weight:700">${esc(picked.name)}</div>
             ${pickedPhoneLine}
           </div>
-          <button type="button" class="btn btn-secondary" style="flex-shrink:0;padding:8px 12px" data-clear-client-pick>Сменить</button>
+          <button type="button" class="btn btn-secondary wizard-picked-client__clear" data-clear-client-pick>Сменить</button>
         </div>`
         : '';
 
@@ -2393,7 +2643,18 @@ async function renderWizard(root, db, go) {
           const b = ev.target.closest('[data-pick-client]');
           if (!b || !resultsEl.contains(b)) return;
           ev.preventDefault();
-          w.clientId = Number(b.getAttribute('data-pick-client'));
+          const pickId = Number(b.getAttribute('data-pick-client'));
+          const rowToPick = clients.find((c) => Number(c.id) === pickId);
+          const pTrim = String(rowToPick?.phone ?? '').trim();
+          if (!rowToPick || !pTrim) {
+            toast('У выбранного клиента не указан номер телефона. Добавьте телефон клиента.');
+            return;
+          }
+          if (!F.clientPhoneHasEnoughDigits(pTrim)) {
+            toast('Введите корректный номер телефона.');
+            return;
+          }
+          w.clientId = pickId;
           w.clientPickSource = 'catalog';
           saveWizard(w);
           paint();
@@ -2413,14 +2674,31 @@ async function renderWizard(root, db, go) {
       root.querySelector('#w1-next')?.addEventListener('click', async () => {
         if (!picked) flushWizardSearch();
         if (Number(w.clientId) > 0) {
-          const catalogRow = clients.find((c) => Number(c.id) === Number(w.clientId));
-          if (
-            !catalogRow ||
-            !String(catalogRow.phone ?? '').trim()
-          ) {
+          const liveClients = await db.listClients();
+          const catalogRow = liveClients.find((c) => Number(c.id) === Number(w.clientId));
+          const catPhone = String(catalogRow?.phone ?? '').trim();
+          if (!catalogRow || !catPhone) {
             toast('У выбранного клиента не указан номер телефона. Добавьте телефон клиента.');
             return;
           }
+          if (!F.clientPhoneHasEnoughDigits(catPhone)) {
+            toast('Введите корректный номер телефона.');
+            return;
+          }
+          clients = liveClients;
+          delete w.serviceId;
+          delete w.catalogServicePicked;
+          delete w.serviceNameSnapshot;
+          delete w.priceRub;
+          delete w.plannedMinutes;
+          delete w.serviceBasePriceRub;
+          delete w.serviceBasePlannedMinutes;
+          delete w.serviceAdjustNote;
+          delete w.adjustingService;
+          delete w.adjustReturnStep;
+          w.difficulty = 2;
+          w.tags = [];
+          w.materialsPlan = [];
           w.step = 2;
           saveWizard(w);
           paint();
@@ -2440,6 +2718,10 @@ async function renderWizard(root, db, go) {
           toast('Введите номер телефона клиента.');
           return;
         }
+        if (!F.clientPhoneHasEnoughDigits(phone)) {
+          toast('Введите корректный номер телефона.');
+          return;
+        }
         const id = await db.addClient({
           name,
           phone,
@@ -2447,6 +2729,19 @@ async function renderWizard(root, db, go) {
         });
         w.clientId = id;
         w.clientPickSource = 'new';
+        delete w.serviceId;
+        delete w.catalogServicePicked;
+        delete w.serviceNameSnapshot;
+        delete w.priceRub;
+        delete w.plannedMinutes;
+        delete w.serviceBasePriceRub;
+        delete w.serviceBasePlannedMinutes;
+        delete w.serviceAdjustNote;
+        delete w.adjustingService;
+        delete w.adjustReturnStep;
+        w.difficulty = 2;
+        w.tags = [];
+        w.materialsPlan = [];
         w.step = 2;
         saveWizard(w);
         paint();
@@ -2458,61 +2753,52 @@ async function renderWizard(root, db, go) {
       const svcList = [...services].sort((a, b) =>
         String(a.name || '').localeCompare(String(b.name || ''), 'ru')
       );
+      const selectedSvcId =
+        w.catalogServicePicked && Number(w.serviceId) > 0 ? Number(w.serviceId) : 0;
       const listButtons = svcList
-        .map(
-          (s) =>
-            `<button type="button" class="card service-card" style="width:100%;text-align:left" data-svc="${s.id}">
-          <div style="font-weight:700">${esc(s.name)}</div>
-          <div class="status-line">от ${F.money(s.basePrice)} · ${F.minutesToLabel(s.plannedMinutes)}</div>
-        </button>`
-        )
+        .map((s) => {
+          const sid = Number(s.id);
+          const isSel = sid === selectedSvcId;
+          return `<button type="button" class="card service-card${
+            isSel ? ' is-selected' : ''
+          }" style="width:100%;text-align:left" data-svc="${s.id}">
+          <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;flex-wrap:wrap">
+            <div style="font-weight:700;flex:1;min-width:0">${esc(s.name)}</div>
+            ${
+              isSel
+                ? `<span class="badge ok" style="flex-shrink:0">Выбрано</span>`
+                : ''
+            }
+          </div>
+          <div class="status-line">${F.money(s.basePrice)}</div>
+          <div class="status-line">${esc(F.minutesToLabel(Number(s.plannedMinutes) || 0))}</div>
+        </button>`;
+        })
         .join('');
       const catalogBlock = svcList.length
         ? `<div class="list-gap">${listButtons}</div>`
-        : `<div class="card" style="text-align:center;padding:18px 12px;margin-bottom:12px"><p class="empty-hint" style="margin:0 0 14px;padding:0;line-height:1.4">У вас пока нет услуг в прайсе</p><div style="display:flex;flex-direction:column;gap:10px"><button type="button" class="btn btn-primary" id="w-empty-add-service">+ Добавить услугу</button><button type="button" class="btn btn-secondary" id="w-empty-custom-shortcut">Своя услуга</button></div></div>`;
+        : `<div class="card" style="text-align:center;padding:18px 12px;margin-bottom:12px"><p class="empty-hint" style="margin:0 0 14px;padding:0;line-height:1.4">У вас пока нет услуг в прайсе</p><button type="button" class="btn btn-primary" id="w-empty-add-service">+ Добавить услугу</button></div>`;
 
-      let cdRaw = Number(w.difficulty);
-      if (!Number.isFinite(cdRaw) || cdRaw < 1 || cdRaw > 5) cdRaw = 2;
+      const pricelistHint = `<p class="muted" style="font-size:0.82rem;margin:14px 0 0;line-height:1.45">
+        Нет нужной услуги?
+        <button type="button" class="btn btn-ghost w2-pricelist-link" style="display:inline;padding:4px 8px;width:auto;font-size:inherit;vertical-align:baseline">Добавить в прайс</button>
+      </p>`;
 
       root.innerHTML = `<div class="content">
         <div class="back-row"><button type="button" class="btn btn-ghost" style="width:auto" data-w-back>Назад</button></div>
         <div class="step-bar">Шаг 2 из 4 · Услуга</div>
-        <h1 style="margin-top:0;font-size:1.35rem">Что делаем</h1>
+        <h1 style="margin-top:0;font-size:1.35rem">Выберите услугу</h1>
         ${catalogBlock}
-        ${svcList.length ? '' : `<p class="muted" style="font-size:0.85rem;margin:4px 0 0;line-height:1.4">Справочник «Прайс» в нижнем меню пуст или скрыты старые тестовые позиции. Разово можно оформить блоком «Своя услуга» ниже — в прайс это не сохранится.</p>`}
-        <hr class="soft" />
-        <p class="card-title">Своя услуга <span class="muted" style="font-weight:400;font-size:0.88rem">(не попадает в прайс)</span></p>
-        <input class="field" id="w-c-name" placeholder="Название" />
-        <div class="row">
-          <div style="flex:1"><label class="label" for="w-c-price">Цена, ₽</label><input class="field" id="w-c-price" type="number" min="0" step="100" value="0" /></div>
-        </div>
-        <label class="label">Плановое время</label>
-        <div class="row">
-          <input class="field" id="w-c-ph" type="number" min="0" step="1" placeholder="Часы" value="${Math.floor(
-            (Number(w.plannedMinutes) || 120) / 60
-          )}" />
-          <input class="field" id="w-c-pm" type="number" min="0" step="5" placeholder="Мин" value="${(Number(w.plannedMinutes) || 120) % 60}" />
-        </div>
-        <p class="card-title">Сложность (1–5)</p>
-        <div class="difficulty-scale" id="w-c-diff">
-          ${[1, 2, 3, 4, 5]
-            .map(
-              (n) =>
-                `<button type="button" class="${n === cdRaw ? 'active' : ''}" data-cd="${n}">${n}</button>`
-            )
-            .join('')}
-        </div>
+        ${svcList.length ? pricelistHint : ''}
         <div class="wizard-footer">
-          <button type="button" class="btn btn-primary" id="w2-custom">Своя услуга — далее</button>
+          <button type="button" class="btn btn-primary" id="w2-next">Далее</button>
         </div>
       </div>`;
       root.querySelector('#w-empty-add-service')?.addEventListener('click', () =>
         go('add-service?return=new')
       );
-      root.querySelector('#w-empty-custom-shortcut')?.addEventListener('click', () => {
-        const row = root.querySelector('#w-c-name');
-        row?.scrollIntoView({ behavior: 'smooth', block: 'center' });
-        row?.focus();
+      root.querySelectorAll('.w2-pricelist-link').forEach((btn) => {
+        btn.addEventListener('click', () => go('add-service?return=new'));
       });
       root.querySelectorAll('[data-svc]').forEach((b) => {
         b.addEventListener('click', async () => {
@@ -2525,6 +2811,8 @@ async function renderWizard(root, db, go) {
           w.catalogServicePicked = true;
           w.serviceId = s.id;
           w.serviceNameSnapshot = s.name;
+          w.serviceBasePriceRub = Number(s.basePrice) || 0;
+          w.serviceBasePlannedMinutes = Math.max(0, Number(s.plannedMinutes) || 0);
           w.priceRub = s.basePrice;
           w.plannedMinutes = s.plannedMinutes;
           const d = Number(s.defaultDifficulty);
@@ -2532,19 +2820,8 @@ async function renderWizard(root, db, go) {
             Number.isFinite(d) && d >= 1 && d <= 5 ? Math.round(d) : 2;
           delete w.adjustingService;
           delete w.adjustReturnStep;
-          w.step = 4;
           saveWizard(w);
           paint();
-        });
-      });
-      root.querySelector('#w-c-diff')?.querySelectorAll('[data-cd]').forEach((btn) => {
-        btn.addEventListener('click', () => {
-          const n = Number(btn.getAttribute('data-cd'));
-          w.difficulty = n;
-          saveWizard(w);
-          root.querySelector('#w-c-diff').querySelectorAll('[data-cd]').forEach((x) => {
-            x.classList.toggle('active', Number(x.getAttribute('data-cd')) === n);
-          });
         });
       });
       root.querySelector('[data-w-back]')?.addEventListener('click', () => {
@@ -2558,36 +2835,18 @@ async function renderWizard(root, db, go) {
         delete w.priceRub;
         delete w.plannedMinutes;
         delete w.serviceNameSnapshot;
+        delete w.serviceBasePriceRub;
+        delete w.serviceBasePlannedMinutes;
+        delete w.serviceAdjustNote;
         w.step = 1;
         saveWizard(w);
         paint();
       });
-      root.querySelector('#w2-custom')?.addEventListener('click', async () => {
-        const name = root.querySelector('#w-c-name').value.trim();
-        if (!name) {
-          toast('Введите название услуги');
+      root.querySelector('#w2-next')?.addEventListener('click', () => {
+        if (!Number(w.serviceId) || !w.catalogServicePicked) {
+          toast('Выберите услугу из прайса.');
           return;
         }
-        const price = Number(root.querySelector('#w-c-price').value) || 0;
-        const ph = Number(root.querySelector('#w-c-ph').value) || 0;
-        const pmField = Number(root.querySelector('#w-c-pm').value) || 0;
-        const planned = ph * 60 + pmField;
-        if (planned <= 0) {
-          toast('Укажите длительность больше нуля');
-          return;
-        }
-        const custD = Number(root.querySelector('#w-c-diff .active')?.getAttribute('data-cd'));
-        w.catalogServicePicked = false;
-        delete w.serviceId;
-        w.serviceNameSnapshot = name;
-        w.priceRub = price;
-        w.plannedMinutes = planned;
-        w.difficulty =
-          Number.isFinite(custD) && custD >= 1 && custD <= 5 ? custD : Number(w.difficulty) || 2;
-        w.tags = [];
-        w.materialsPlan = [];
-        delete w.adjustingService;
-        delete w.adjustReturnStep;
         w.step = 4;
         saveWizard(w);
         paint();
@@ -2767,6 +3026,7 @@ async function renderWizard(root, db, go) {
 
     if (step === 5) {
       const dateStr = (w.date || F.todayISO()).split('T')[0];
+      const initialBusyHtml = await htmlBusyDaySlotsBody(db, dateStr, null);
       const fallbackTime = F.defaultNewAppointmentTimeHHMM(dateStr);
       if (w.time == null || String(w.time).trim() === '') {
         w.time = fallbackTime;
@@ -2790,6 +3050,10 @@ async function renderWizard(root, db, go) {
         ${wizardServiceSummaryCard(w, true)}
         <label class="label" for="w-date">Дата</label>
         <input class="field" id="w-date" type="date" value="${w.date || F.todayISO()}" />
+        <div class="card compact" style="margin-top:14px">
+          <div class="card-title">Занято в этот день</div>
+          <div id="w-busy-slots-body">${initialBusyHtml}</div>
+        </div>
         <p class="card-title" style="margin-top:14px">Время записи</p>
         <p class="muted" style="font-size:0.84rem;margin:0 0 10px;line-height:1.4">Без «до полудня» — только цифры. Часы от 00 до 23, минуты: 00, 15, 30 или 45.</p>
         <div class="row" style="align-items:flex-end">
@@ -2806,6 +3070,15 @@ async function renderWizard(root, db, go) {
           <button type="button" class="btn btn-primary" id="w5-save">Сохранить запись</button>
         </div>
       </div>`;
+      const wDateEl = root.querySelector('#w-date');
+      const wBusyBody = root.querySelector('#w-busy-slots-body');
+      const reloadWizardBusy = async () => {
+        const dk = appointmentDateKeyIso(wDateEl?.value || dateStr);
+        if (wBusyBody) wBusyBody.innerHTML = await htmlBusyDaySlotsBody(db, dk, null);
+      };
+      wDateEl?.addEventListener('change', () => {
+        void reloadWizardBusy();
+      });
       root.querySelector('[data-w-back]')?.addEventListener('click', () => {
         w.date = root.querySelector('#w-date').value;
         w.time = F.hourMinuteToHHMM(
@@ -2855,7 +3128,7 @@ async function renderWizard(root, db, go) {
           materialCostRub: null,
           profitRub: null,
           completedAt: null,
-          notes: '',
+          notes: String(w.serviceAdjustNote || '').trim(),
         };
 
         const cid = Number(w.clientId);
@@ -2886,6 +3159,10 @@ async function renderWizard(root, db, go) {
           toast(phoneMsg);
           return;
         }
+        if (!F.clientPhoneHasEnoughDigits(clientPhoneTrim)) {
+          toast('Введите корректный номер телефона.');
+          return;
+        }
 
         if (F.isAppointmentStartInPastToday(appt.date, appt.time)) {
           toast('Вы выбрали время, которое уже прошло. Измените время записи.');
@@ -2893,12 +3170,10 @@ async function renderWizard(root, db, go) {
         }
 
         const existing = await db.listAppointments();
-        for (const row of existing) {
-          if (row.status === 'done' || row.status === 'cancelled') continue;
-          if (F.appointmentTimesOverlapSameDay(appt, row)) {
-            toast('На это время уже есть другая запись. Выберите другое время.');
-            return;
-          }
+        const conflictRow = pickConflictRowWithLatestEnd(appt, existing, null);
+        if (conflictRow) {
+          toastOverlapFromConflictRow(conflictRow);
+          return;
         }
 
         await db.addAppointment(appt);

@@ -223,6 +223,63 @@ button.c-mat-remove:active {
   border: 1px solid var(--line);
 }
 
+/* Вспомогательное действие в карточке записи — перенос (слабее «Завершить») */
+.btn.btn-reschedule {
+  width: auto;
+  max-width: 100%;
+  padding: 6px 12px;
+  min-height: 0;
+  font-size: 0.8125rem;
+  font-weight: 500;
+  line-height: 1.25;
+  background: transparent;
+  color: var(--muted);
+  border: 1px solid var(--line);
+  box-shadow: none;
+  align-self: flex-start;
+}
+
+.btn.btn-reschedule:hover {
+  color: var(--text);
+  border-color: #d1d5db;
+  background: var(--bg);
+}
+
+.btn.btn-reschedule:active {
+  background: var(--accent-soft);
+  color: var(--text);
+}
+
+.record-card__appt-actions {
+  margin-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  align-items: stretch;
+}
+
+/* Шаг мастера «Клиент»: «Сменить» не должен тянуться на всю ширину (.btn по умолчанию width:100%) */
+.wizard-picked-client {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.wizard-picked-client__main {
+  flex: 1;
+  min-width: 0;
+}
+
+.wizard-picked-client__clear.btn {
+  width: auto;
+  flex-shrink: 0;
+  align-self: center;
+  padding: 8px 12px;
+  font-size: 0.875rem;
+  font-weight: 600;
+}
+
 .btn-ghost {
   background: transparent;
   color: var(--accent);
@@ -334,7 +391,8 @@ textarea.field {
   cursor: default;
 }
 
-.client-card.is-selected {
+.client-card.is-selected,
+.service-card.is-selected {
   border-color: var(--accent);
   background: var(--accent-soft);
   box-shadow: 0 0 0 2px var(--accent-soft);

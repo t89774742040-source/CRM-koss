@@ -220,3 +220,15 @@ export function parseMinutesFromFields(hours, minutes) {
   const m = Math.max(0, parseInt(minutes, 10) || 0);
   return h * 60 + m;
 }
+
+/** Количество цифр в телефоне (всё кроме 0–9 отбрасывается). */
+export function phoneDigitCount(s) {
+  return String(s ?? '').replace(/\D/g, '').length;
+}
+
+/** Минимум цифр для валидного телефона клиента при ручном вводе. */
+export const CLIENT_PHONE_MIN_DIGITS = 10;
+
+export function clientPhoneHasEnoughDigits(s) {
+  return phoneDigitCount(s) >= CLIENT_PHONE_MIN_DIGITS;
+}

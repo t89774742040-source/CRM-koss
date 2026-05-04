@@ -380,7 +380,7 @@ function createApi(db) {
       basePrice: Number(data.basePrice) || 0,
       plannedMinutes: Number(data.plannedMinutes) || 60,
       defaultDifficulty:
-        Number.isFinite(d) && d >= 1 && d <= 5 ? Math.round(d) : 2,
+        Number.isFinite(d) && d >= 1 && d <= 5 ? Math.round(d) : 1,
       note: data.note || '',
       isActive: true,
     };
