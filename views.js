@@ -115,6 +115,47 @@ function appointmentDateKeyIso(dateField) {
   return String(dateField ?? '').split('T')[0].trim();
 }
 
+/** YYYY-MM-DD → ДД.ММ.ГГГГ для поля даты в мастере. */
+function isoDateToDdMmYyyyField(iso) {
+  const key = appointmentDateKeyIso(iso);
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(key);
+  if (!m) return '';
+  return `${m[3]}.${m[2]}.${m[1]}`;
+}
+
+function addDaysIso(baseIso, days) {
+  const s = appointmentDateKeyIso(baseIso);
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s);
+  if (!m) return null;
+  const y = Number(m[1]);
+  const mo = Number(m[2]);
+  const d = Number(m[3]);
+  if (!y || !mo || !d) return null;
+  const dt = new Date(y, mo - 1, d + Number(days || 0), 0, 0, 0, 0);
+  const yy = dt.getFullYear();
+  const mm = String(dt.getMonth() + 1).padStart(2, '0');
+  const dd = String(dt.getDate()).padStart(2, '0');
+  return `${yy}-${mm}-${dd}`;
+}
+
+function reminderDateLabel(reminderDateIso, todayIso) {
+  const d = appointmentDateKeyIso(reminderDateIso);
+  if (!d) return '—';
+  if (d === todayIso) return 'сегодня';
+  const tomorrow = addDaysIso(todayIso, 1);
+  if (d === tomorrow) return 'завтра';
+  return F.formatDateISO(d);
+}
+
+function pluralizeRecords(count) {
+  const n = Math.abs(Math.trunc(Number(count) || 0));
+  const mod10 = n % 10;
+  const mod100 = n % 100;
+  if (mod10 === 1 && mod100 !== 11) return 'запись';
+  if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) return 'записи';
+  return 'записей';
+}
+
 /** Активные записи на день для подсказки «занято» (без завершённых и отменённых). */
 function appointmentsOnDayActive(appointments, dateKey, excludeAppointmentId) {
   return appointments.filter((a) => {
@@ -265,6 +306,20 @@ function buildPurchaseNewMaterialDisplayName(typeValue, seriesRaw, colorRaw) {
   const color = String(colorRaw ?? '').trim();
   const parts = [];
   if (label) parts.push(label);
+  if (series) parts.push(series);
+  if (color) parts.push(color);
+  return parts.join(' · ');
+}
+
+function buildMaterialCatalogDisplayName(typeValue, seriesRaw, colorRaw) {
+  const typeRaw = String(typeValue ?? '').trim();
+  const typeLabel = typeRaw
+    ? `${typeRaw.charAt(0).toUpperCase()}${typeRaw.slice(1)}`
+    : '';
+  const series = String(seriesRaw ?? '').trim();
+  const color = String(colorRaw ?? '').trim();
+  const parts = [];
+  if (typeLabel) parts.push(typeLabel);
   if (series) parts.push(series);
   if (color) parts.push(color);
   return parts.join(' · ');
@@ -628,6 +683,53 @@ async function renderToday(db, meta, go) {
         .join('')
     : `<div class="empty-hint">На сегодня записей нет.<br />Добавьте первую запись.</div>`;
 
+  const reminders = appointments
+    .filter((a) => {
+      const rd = appointmentDateKeyIso(a.reminderDate);
+      return !!rd && rd <= t && a.reminderDone !== true;
+    })
+    .sort((a, b) => {
+      const da = appointmentDateKeyIso(a.reminderDate);
+      const dbi = appointmentDateKeyIso(b.reminderDate);
+      const byDate = da.localeCompare(dbi, 'ru');
+      if (byDate !== 0) return byDate;
+      const ma = F.timeHHMMToMinutes(a.time);
+      const mb = F.timeHHMMToMinutes(b.time);
+      if (ma != null && mb != null) return ma - mb;
+      return String(a.time || '').localeCompare(String(b.time || ''), 'ru');
+    });
+  const remindersBlock = reminders.length
+    ? `<div class="card" style="margin-top:16px">
+      <div class="card-title">Напоминания</div>
+      <div class="list-gap">
+        ${reminders
+          .map((a) => {
+            const c = clientMap[a.clientId];
+            const cname = String(c?.name || 'Клиент').trim() || 'Клиент';
+            const cphone = String(c?.phone || '').trim();
+            const clientLine = cphone ? `${esc(cname)} · ${esc(cphone)}` : esc(cname);
+            const service = esc(String(a.serviceNameSnapshot || 'Услуга').trim() || 'Услуга');
+            const wearUntil = appointmentDateKeyIso(a.wearUntilDate);
+            const reminder = appointmentDateKeyIso(a.reminderDate);
+            const wearLine = wearUntil ? F.formatDateISO(wearUntil) : '—';
+            const remindLine = reminder && reminder < t ? 'Напоминание просрочено' : 'сегодня';
+            const comment = String(a.reminderComment || '').trim();
+            return `<article class="card compact" style="margin-bottom:8px">
+              <div style="font-weight:700">${clientLine}</div>
+              <div class="status-line" style="margin-top:4px">${service}</div>
+              <div class="status-line">Расплет примерно: ${esc(wearLine)}</div>
+              <div class="status-line">Напомнить: ${esc(remindLine)}</div>
+              ${comment ? `<div class="status-line">Комментарий: ${esc(comment)}</div>` : ''}
+              <div style="margin-top:8px">
+                <button type="button" class="btn btn-secondary btn-reschedule" data-reminder-done="${a.id}">Связалась</button>
+              </div>
+            </article>`;
+          })
+          .join('')}
+      </div>
+    </div>`
+    : '';
+
   const serviceBlock = `<div class="card svc-data-card" style="margin-top:20px">${htmlDataBackupCard()}</div>`;
 
   return `<header class="page-header">
@@ -651,7 +753,7 @@ async function renderToday(db, meta, go) {
   <div class="content">
     <div class="card">
       <div class="card-title">Сегодня</div>
-      <p class="stat-big">${day.length} записей</p>
+      <p class="stat-big">${day.length} ${pluralizeRecords(day.length)}</p>
       <div class="stat-grid">
         <div class="card compact">
           <div class="card-title">Доход</div>
@@ -675,6 +777,7 @@ async function renderToday(db, meta, go) {
       </div>
     </div>
     <button type="button" class="btn btn-primary" id="btn-new-appt">＋ Новая запись</button>
+    ${remindersBlock}
     <h2 style="margin:20px 0 10px;font-size:1rem">Записи на сегодня</h2>
     <div class="list-gap">${cards}</div>
     ${serviceBlock}
@@ -690,13 +793,11 @@ function attachAppointmentDeleteButtons(root, db, go, refresh) {
         e.stopPropagation();
         const id = Number(btn.getAttribute('data-delete-appt'));
         if (!id) return;
-        const isDone = btn.getAttribute('data-appt-done') === '1';
-        const msg = isDone
-          ? 'Удалить завершённую запись?\nЕсли по ней были списаны материалы, они не вернутся на склад автоматически.'
-          : 'Удалить эту запись?\nОна исчезнет из списка записей.';
+        const msg =
+          'Удалить запись?\nЗапись исчезнет из списка. Клиент, услуги и материалы останутся.';
         void (async () => {
           const ok = await confirmDialog(msg, {
-            leftLabel: 'Оставить',
+            leftLabel: 'Отмена',
             rightLabel: 'Удалить',
             focusLeft: true,
           });
@@ -875,6 +976,20 @@ export function attachToday(shell, db, go, refresh) {
       e.stopPropagation();
       const id = b.getAttribute('data-done');
       go(`complete-${id}?from=today`);
+    });
+  });
+  root.querySelectorAll('[data-reminder-done]').forEach((b) => {
+    b.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      const id = Number(b.getAttribute('data-reminder-done'));
+      if (!id) return;
+      const row = await db.getAppointment(id);
+      if (!row) return;
+      row.reminderDone = true;
+      row.reminderDoneAt = new Date().toISOString();
+      await db.putAppointment(row);
+      await refresh();
+      go('today');
     });
   });
   attachAppointmentDeleteButtons(root, db, go, refresh);
@@ -1168,15 +1283,10 @@ export function attachClientDetail(shell, db, go, id) {
   });
 
   root.querySelector('#cd-delete-client')?.addEventListener('click', async () => {
-    const linked = (await db.listAppointments()).filter(
-      (a) => Number(a.clientId) === cid
-    );
-    if (linked.length > 0) {
-      toast('У клиента есть записи. Сначала удалите связанные записи.');
-      return;
-    }
-    const ok = await confirmDialog('Удалить клиента?\nОн исчезнет из списка клиентов.', {
-      leftLabel: 'Оставить',
+    const ok = await confirmDialog(
+      'Удалить клиента?\nЕсли у клиента есть записи, лучше не удалять его. История визитов может стать неполной.',
+      {
+      leftLabel: 'Отмена',
       rightLabel: 'Удалить',
       focusLeft: true,
     });
@@ -1289,7 +1399,15 @@ export function attachMaterials(shell, db, go) {
   root.querySelectorAll('[data-del-mat]').forEach((b) => {
     b.addEventListener('click', async (e) => {
       e.stopPropagation();
-      if (!confirm('Убрать материал из списка?')) return;
+      const ok = await confirmDialog(
+        'Удалить материал?\nЕсли материал уже использовался в списаниях или закупках, он будет скрыт из склада, но история сохранится.',
+        {
+          leftLabel: 'Отмена',
+          rightLabel: 'Удалить',
+          focusLeft: true,
+        }
+      );
+      if (!ok) return;
       const id = b.getAttribute('data-del-mat');
       try {
         const r = await db.deleteOrArchiveMaterial(id);
@@ -1846,22 +1964,27 @@ async function renderAddMaterial() {
   const ret = new URLSearchParams(qs).get('return');
   const fromWizard = ret === 'new';
   const typeOptions = MATERIAL_TYPES.map((v) => `<option value="${v}">${esc(v)}</option>`).join('');
-  const firstType = MATERIAL_TYPES[0];
-  const isWeight = WEIGHT_TYPES.has(firstType);
   return `<div class="content">
     <div class="back-row"><a href="${fromWizard ? '#new' : '#materials'}" data-back>${fromWizard ? '← К записи' : '← Материалы'}</a></div>
     <h1 style="margin:0 0 16px;font-size:1.35rem">Новый материал</h1>
-    <label class="label" for="nm-name">Название</label>
-    <input class="field" id="nm-name" placeholder="Например: Канекалон" />
     <label class="label" for="nm-type">Тип материала</label>
     <select class="field" id="nm-type">${typeOptions}</select>
-    <p class="status-line" id="nm-base-unit">Базовая единица: ${isWeight ? 'граммы' : 'штуки'}</p>
+    <label class="label" for="nm-series">Название / серия</label>
+    <input class="field" id="nm-series" placeholder="Например: Неон, Омбре, Премиум" />
+    <label class="label" for="nm-color">Цвет / номер оттенка</label>
+    <input class="field" id="nm-color" placeholder="Например: 2365, 1B или розовый" />
+    <label class="label" for="nm-unit">Единица списания</label>
+    <select class="field" id="nm-unit">
+      <option value="g">граммы</option>
+      <option value="pcs">штуки</option>
+    </select>
+    <p class="status-line" id="nm-base-unit">Базовая единица: граммы</p>
     <label class="label" for="nm-pack-price">Цена за упаковку (пачку)</label>
     <input class="field" id="nm-pack-price" type="number" min="0" step="1" value="0" />
-    <label class="label" id="nm-pack-size-label" for="nm-pack-weight">${isWeight ? 'Вес упаковки (граммы)' : 'Количество в упаковке (шт)'}</label>
+    <label class="label" id="nm-pack-size-label" for="nm-pack-weight">Вес упаковки (граммы)</label>
     <input class="field" id="nm-pack-weight" type="number" min="0" step="1" value="100" />
-    <p class="status-line" id="nm-gram-price-preview">≈ 0 ₽ за ${isWeight ? 'грамм' : 'штуку'} (расчет)</p>
-    <label class="label" id="nm-min-label" for="nm-min">Минимум (${isWeight ? 'граммы' : 'шт'})</label>
+    <p class="status-line" id="nm-gram-price-preview">≈ 0 ₽ за грамм (расчет)</p>
+    <label class="label" id="nm-min-label" for="nm-min">Минимум (граммы)</label>
     <input class="field" id="nm-min" type="number" min="0" step="1" value="0" />
     <label class="label" for="nm-comment">Комментарий</label>
     <textarea class="field" id="nm-comment" placeholder="Необязательно"></textarea>
@@ -1881,15 +2004,15 @@ export function attachAddMaterial(shell, db, go, refresh) {
   const packWeightEl = root.querySelector('#nm-pack-weight');
   const gramPreviewEl = root.querySelector('#nm-gram-price-preview');
   const typeEl = root.querySelector('#nm-type');
+  const unitEl = root.querySelector('#nm-unit');
   const baseUnitEl = root.querySelector('#nm-base-unit');
   const packSizeLabelEl = root.querySelector('#nm-pack-size-label');
   const minLabelEl = root.querySelector('#nm-min-label');
   let unitCode = 'g';
 
-  const syncTypeUi = () => {
-    const type = typeEl?.value || 'прочее';
-    const isWeight = WEIGHT_TYPES.has(type);
-    unitCode = isWeight ? 'g' : 'pcs';
+  const syncUnitUi = () => {
+    unitCode = unitEl?.value === 'pcs' ? 'pcs' : 'g';
+    const isWeight = unitCode === 'g';
     if (baseUnitEl) baseUnitEl.textContent = `Базовая единица: ${isWeight ? 'граммы' : 'штуки'}`;
     if (packSizeLabelEl) {
       packSizeLabelEl.textContent = isWeight
@@ -1908,27 +2031,37 @@ export function attachAddMaterial(shell, db, go, refresh) {
       gramPreviewEl.textContent = `≈ ${F.money(basePrice)} за ${unitCode === 'g' ? 'грамм' : 'штуку'} (расчет)`;
     }
   };
-  typeEl?.addEventListener('change', syncTypeUi);
+  unitEl?.addEventListener('change', syncUnitUi);
   packPriceEl?.addEventListener('input', recalcGramPrice);
   packWeightEl?.addEventListener('input', recalcGramPrice);
-  syncTypeUi();
+  syncUnitUi();
   recalcGramPrice();
   root.querySelector('#nm-save')?.addEventListener('click', async () => {
-    const name = root.querySelector('#nm-name').value.trim();
-    if (!name) {
-      toast('Введите название материала');
+    const typeVal = String(typeEl?.value ?? '').trim();
+    if (!typeVal) {
+      toast('Выберите тип материала.');
       return;
     }
+    const seriesTrim = String(root.querySelector('#nm-series')?.value ?? '').trim();
+    if (!seriesTrim) {
+      toast('Введите название или серию материала.');
+      return;
+    }
+    const colorTrim = String(root.querySelector('#nm-color')?.value ?? '').trim();
+    const name = buildMaterialCatalogDisplayName(typeVal, seriesTrim, colorTrim);
     const packagePrice = Math.max(0, Number(packPriceEl?.value) || 0);
     const packageSize = Math.max(0, Number(packWeightEl?.value) || 0);
     const defaultPrice =
       packageSize > 0 ? packagePrice / packageSize : 0;
     await db.addMaterial({
       name,
-      materialType: root.querySelector('#nm-type').value,
+      materialType: typeVal,
+      materialSeries: seriesTrim,
+      materialColor: colorTrim,
+      materialColorCode: colorTrim,
       packagePrice,
-      packageWeightGrams: packageSize,
-      packageQtyPcs: packageSize,
+      packageWeightGrams: unitCode === 'g' ? packageSize : 0,
+      packageQtyPcs: unitCode === 'pcs' ? packageSize : 0,
       unit: unitCode,
       defaultPrice,
       baseUnit: unitCode,
@@ -2045,7 +2178,6 @@ async function renderFinance(db, go) {
     <div class="card compact">
       <div class="card-title">Кратко</div>
       <p class="status-line">Завершённых визитов: ${doneVisits}</p>
-      <p class="status-line">Уникальных клиентов: ${clientsN}</p>
       <p class="status-line">Средний чек: ${F.money(avgCheck)}</p>
       <p class="status-line">Прибыль за час работы: ${F.money(profitPerHour)}</p>
     </div>
@@ -2099,7 +2231,15 @@ export function attachServices(shell, db, go, refresh) {
       e.stopPropagation();
       const id = Number(btn.getAttribute('data-sv-del'));
       if (!id) return;
-      if (!confirm('Убрать услугу из прайса?')) return;
+      const ok = await confirmDialog(
+        'Удалить услугу из прайса?\nЕсли услуга уже использовалась в записях, она будет скрыта из прайса, но история записей сохранится.',
+        {
+          leftLabel: 'Отмена',
+          rightLabel: 'Удалить',
+          focusLeft: true,
+        }
+      );
+      if (!ok) return;
       const r = await db.deleteServiceOrArchive(id);
       if (!r.ok) {
         toast('Не удалось удалить услугу');
@@ -2264,7 +2404,6 @@ async function renderSettings(db, meta, go, refresh) {
     hourlyMeta != null && hourlyMeta !== '' ? esc(String(hourlyMeta)) : '';
   const fixedVal =
     fixedMeta != null && fixedMeta !== '' ? esc(String(fixedMeta)) : '';
-  const codesHint = 'Коды: KOSO-FULL-2026 · BEAUTY-CRM-KEY · MASTERS-DEMO-UNLOCK';
   return `<div class="content">
     <div class="back-row"><a href="#today" data-back>← Главная</a></div>
     <h1 style="margin-top:8px">Настройки</h1>
@@ -2282,7 +2421,6 @@ async function renderSettings(db, meta, go, refresh) {
     <input class="field" id="st-fixed" type="number" min="0" step="50" value="${fixedVal}" placeholder="200" />
     <button type="button" class="btn btn-secondary" id="st-save-cost" style="margin-top:10px">Сохранить настройки</button>
     <hr class="soft" />
-    <p class="muted" style="font-size:0.85rem">${esc(codesHint)}</p>
     <label class="label" for="st-code">Активация</label>
     <p class="muted" style="font-size:0.82rem;margin:4px 0 8px;line-height:1.45">
       Код доступа можно получить в Telegram:
@@ -3025,7 +3163,9 @@ async function renderWizard(root, db, go) {
     }
 
     if (step === 5) {
-      const dateStr = (w.date || F.todayISO()).split('T')[0];
+      const rawKey = appointmentDateKeyIso(w.date || F.todayISO());
+      const dateIsoForUi = /^(\d{4})-(\d{2})-(\d{2})$/.test(rawKey) ? rawKey : F.todayISO();
+      const dateStr = dateIsoForUi;
       const initialBusyHtml = await htmlBusyDaySlotsBody(db, dateStr, null);
       const fallbackTime = F.defaultNewAppointmentTimeHHMM(dateStr);
       if (w.time == null || String(w.time).trim() === '') {
@@ -3049,7 +3189,8 @@ async function renderWizard(root, db, go) {
         <h1 style="margin-top:0;font-size:1.35rem">Дата и время</h1>
         ${wizardServiceSummaryCard(w, true)}
         <label class="label" for="w-date">Дата</label>
-        <input class="field" id="w-date" type="date" value="${w.date || F.todayISO()}" />
+        <p class="muted" style="font-size:0.82rem;margin:-4px 0 6px;line-height:1.4">Введите дату в формате ДД.ММ.ГГГГ</p>
+        <input class="field" id="w-date" type="text" inputmode="numeric" autocomplete="off" placeholder="ДД.ММ.ГГГГ" maxlength="10" spellcheck="false" value="${esc(isoDateToDdMmYyyyField(dateIsoForUi))}" />
         <div class="card compact" style="margin-top:14px">
           <div class="card-title">Занято в этот день</div>
           <div id="w-busy-slots-body">${initialBusyHtml}</div>
@@ -3072,15 +3213,28 @@ async function renderWizard(root, db, go) {
       </div>`;
       const wDateEl = root.querySelector('#w-date');
       const wBusyBody = root.querySelector('#w-busy-slots-body');
+      let lastBusyDateKey = dateStr;
       const reloadWizardBusy = async () => {
-        const dk = appointmentDateKeyIso(wDateEl?.value || dateStr);
+        const raw = String(wDateEl?.value ?? '').trim();
+        const parsed = F.parseDateRu(raw);
+        const dk = parsed || lastBusyDateKey;
+        if (parsed) lastBusyDateKey = parsed;
         if (wBusyBody) wBusyBody.innerHTML = await htmlBusyDaySlotsBody(db, dk, null);
       };
+      wDateEl?.addEventListener('input', () => {
+        void reloadWizardBusy();
+      });
       wDateEl?.addEventListener('change', () => {
         void reloadWizardBusy();
       });
       root.querySelector('[data-w-back]')?.addEventListener('click', () => {
-        w.date = root.querySelector('#w-date').value;
+        const raw = String(root.querySelector('#w-date')?.value ?? '').trim();
+        const parsed = F.parseDateRu(raw);
+        if (!parsed) {
+          toast('Введите дату в формате ДД.ММ.ГГГГ.');
+          return;
+        }
+        w.date = parsed;
         w.time = F.hourMinuteToHHMM(
           root.querySelector('#w-th').value,
           root.querySelector('#w-tm').value
@@ -3098,6 +3252,12 @@ async function renderWizard(root, db, go) {
         paint();
       });
       root.querySelector('#w5-save')?.addEventListener('click', async () => {
+        const dateRaw = String(root.querySelector('#w-date')?.value ?? '').trim();
+        const dateIso = F.parseDateRu(dateRaw);
+        if (!dateIso) {
+          toast('Введите дату в формате ДД.ММ.ГГГГ.');
+          return;
+        }
         const svcIdCatalog =
           w.catalogServicePicked === false
             ? null
@@ -3108,7 +3268,7 @@ async function renderWizard(root, db, go) {
           clientId: w.clientId,
           serviceId: svcIdCatalog,
           serviceNameSnapshot: w.serviceNameSnapshot,
-          date: root.querySelector('#w-date').value,
+          date: dateIso,
           time: F.hourMinuteToHHMM(
             root.querySelector('#w-th').value,
             root.querySelector('#w-tm').value
@@ -3399,6 +3559,12 @@ async function renderComplete(root, db, id, go, refresh, meta = {}, backTarget =
   const initialTotalCogs = initialMatCost + initialLaborCost + fixedOrder;
   const initialProfit = initialPaidNum - initialTotalCogs;
   const initialLabHint = `${initialActualMin} мин × ${F.money(hourlyRate)}/ч`;
+  const wearDaysInitRaw = Number(ap.wearDays);
+  const wearDaysInitial = Number.isFinite(wearDaysInitRaw) && wearDaysInitRaw > 0 ? String(Math.round(wearDaysInitRaw)) : '';
+  const remindInitRaw = Number(ap.remindBeforeDays);
+  const remindBeforeInitial =
+    Number.isFinite(remindInitRaw) && remindInitRaw >= 0 ? String(Math.round(remindInitRaw)) : '3';
+  const reminderCommentInitial = String(ap.reminderComment || '');
 
   root.innerHTML = `<div class="content">
     <div class="back-row"><a href="#${backTarget}" data-back>← Назад</a></div>
@@ -3432,6 +3598,18 @@ async function renderComplete(root, db, id, go, refresh, meta = {}, backTarget =
       <p class="status-line">Прибыль (оплата − себестоимость): <strong id="c-profit" class="${
         initialProfit >= 0 ? 'profit-pos' : 'profit-neg'
       }">${F.money(initialProfit)}</strong></p>
+    </div>
+
+    <div class="card compact" id="c-reminder">
+      <div class="card-title">Напоминание о расплете</div>
+      <label class="label" for="c-wear-days">Срок носки, дней</label>
+      <input class="field" id="c-wear-days" type="number" min="0" step="1" value="${esc(wearDaysInitial)}" placeholder="Например: 45" />
+      <label class="label" for="c-remind-before">Напомнить за, дней</label>
+      <input class="field" id="c-remind-before" type="number" min="0" step="1" value="${esc(remindBeforeInitial)}" placeholder="3" />
+      <label class="label" for="c-reminder-comment">Комментарий</label>
+      <textarea class="field" id="c-reminder-comment" rows="3" placeholder="Необязательно">${esc(reminderCommentInitial)}</textarea>
+      <p class="muted" style="font-size:0.82rem;margin:-6px 0 0;line-height:1.45">Например: написать клиенту за несколько дней до расплета.</p>
+      <p class="muted" style="font-size:0.82rem;margin:6px 0 0;line-height:1.45">Укажите срок носки, если хотите создать напоминание о расплете.</p>
     </div>
 
     <button type="button" class="btn btn-primary" id="c-done">Завершить и списать</button>
@@ -3532,6 +3710,11 @@ async function renderComplete(root, db, id, go, refresh, meta = {}, backTarget =
     const orderFixedCostRub = fixedOrder;
     const totalCogsRub = materialsCostRub + laborCostRub + orderFixedCostRub;
     const profitRub = paid - totalCogsRub;
+    const wearDaysRaw = String(root.querySelector('#c-wear-days')?.value ?? '').trim();
+    const remindRaw = String(root.querySelector('#c-remind-before')?.value ?? '').trim();
+    const reminderComment = String(root.querySelector('#c-reminder-comment')?.value ?? '').trim();
+    const wearDays = wearDaysRaw === '' ? null : Math.max(0, Math.round(Number(wearDaysRaw) || 0));
+    const remindBeforeDays = remindRaw === '' ? 3 : Math.max(0, Math.round(Number(remindRaw) || 0));
     await db.completeAppointment(ap.id, {
       actualMinutes,
       materialsFact: next,
@@ -3542,6 +3725,9 @@ async function renderComplete(root, db, id, go, refresh, meta = {}, backTarget =
       totalCogsRub,
       materialCostRub: materialsCostRub,
       profitRub,
+      wearDays,
+      remindBeforeDays,
+      reminderComment,
     });
     sessionStorage.removeItem(payDraftKey);
     toast('Списание выполнено');

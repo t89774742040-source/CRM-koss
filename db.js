@@ -16,6 +16,21 @@ function txDone(tx) {
   });
 }
 
+function addDaysIso(dateIso, days) {
+  const s = String(dateIso || '').split('T')[0];
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s);
+  if (!m) return null;
+  const y = Number(m[1]);
+  const mo = Number(m[2]);
+  const d = Number(m[3]);
+  if (!y || !mo || !d) return null;
+  const dt = new Date(y, mo - 1, d + Number(days || 0), 0, 0, 0, 0);
+  const yy = dt.getFullYear();
+  const mm = String(dt.getMonth() + 1).padStart(2, '0');
+  const dd = String(dt.getDate()).padStart(2, '0');
+  return `${yy}-${mm}-${dd}`;
+}
+
 export async function openDb() {
   return new Promise((resolve, reject) => {
     const req = indexedDB.open(DB_NAME, DB_VERSION);
@@ -667,6 +682,26 @@ function createApi(db) {
         : matOnly + ap.laborCostRub + ap.orderFixedCostRub;
     ap.profitRub = Number(data.profitRub) || 0;
     ap.completedAt = new Date().toISOString();
+    const wearDaysRaw = Number(data.wearDays);
+    const wearDays = Number.isFinite(wearDaysRaw) ? Math.max(0, Math.round(wearDaysRaw)) : 0;
+    const remindRaw = Number(data.remindBeforeDays);
+    const remindBeforeDays = Number.isFinite(remindRaw) ? Math.max(0, Math.round(remindRaw)) : 0;
+    const reminderComment = String(data.reminderComment || '').trim();
+    if (wearDays > 0) {
+      const wearUntilDate = addDaysIso(ap.date || dateStr, wearDays);
+      const reminderDate = wearUntilDate ? addDaysIso(wearUntilDate, -remindBeforeDays) : null;
+      ap.wearDays = wearDays;
+      ap.remindBeforeDays = remindBeforeDays;
+      ap.wearUntilDate = wearUntilDate;
+      ap.reminderDate = reminderDate;
+      ap.reminderComment = reminderComment;
+    } else {
+      ap.wearDays = null;
+      ap.remindBeforeDays = null;
+      ap.wearUntilDate = null;
+      ap.reminderDate = null;
+      ap.reminderComment = reminderComment || null;
+    }
     const movementsSnapshot = await listMovements();
     const tx = db.transaction(['appointments', 'materials', 'stockMovements'], 'readwrite');
     const apStore = tx.objectStore('appointments');
