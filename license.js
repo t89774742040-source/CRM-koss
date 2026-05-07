@@ -2,9 +2,9 @@ const TRIAL_MS = 3 * 24 * 60 * 60 * 1000;
 
 /** Коды активации (полная версия). Можно добавить свои. */
 const VALID_CODES = new Set([
-  'KOSO-FULL-2026-A7K3',
-  'KOSO-FULL-2026-Q9M2',
-  'KOSO-FULL-2026-Z4R8',
+  'KOSO-ACCESS-2026-M7P4',
+  'KOSO-ACCESS-2026-R2X9',
+  'KOSO-ACCESS-2026-L8Q5',
 ]);
 
 export function isActivated(meta) {
