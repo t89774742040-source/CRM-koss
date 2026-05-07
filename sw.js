@@ -1,4 +1,4 @@
-const CACHE = 'kosocrm-v27';
+const CACHE = 'kosocrm-v28';
 const ASSETS = [
   './',
   './index.html',

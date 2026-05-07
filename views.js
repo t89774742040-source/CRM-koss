@@ -351,6 +351,7 @@ function parseRoute(r) {
   if (base.startsWith('client-')) return { view: 'client', id: base.slice(7) };
   if (base.startsWith('material-')) return { view: 'material', id: base.slice(9) };
   if (base.startsWith('complete-')) return { view: 'complete', id: base.slice(9) };
+  if (base.startsWith('edit-')) return { view: 'edit', id: base.slice(5) };
   return { view: base || 'today' };
 }
 
@@ -423,6 +424,7 @@ export async function mount(shell, ctx) {
 
   const hideNav =
     parsed.view === 'new' ||
+    parsed.view === 'edit' ||
     parsed.view === 'complete' ||
     parsed.view === 'purchase' ||
     parsed.view === 'add-material' ||
@@ -466,6 +468,8 @@ export async function mount(shell, ctx) {
     root.innerHTML = await renderSettings(db, meta, go, refresh);
   } else if (parsed.view === 'new') {
     await renderWizard(root, db, go);
+  } else if (parsed.view === 'edit') {
+    await renderWizard(root, db, go, { editAppointmentId: parsed.id });
   } else if (parsed.view === 'complete') {
     await renderComplete(root, db, parsed.id, go, refresh, meta, completeReturnTarget(route));
   } else {
@@ -578,6 +582,15 @@ async function renderToday(db, meta, go) {
     db.listClients(),
   ]);
   const day = appointments.filter((a) => a.date === t);
+  const staleOpen = appointments
+    .filter(
+      (a) => String(a.date || '') < t && a.status !== 'done' && a.status !== 'cancelled'
+    )
+    .sort((a, b) => {
+      const da = `${a.date || ''} ${a.time || ''}`;
+      const dbi = `${b.date || ''} ${b.time || ''}`;
+      return da.localeCompare(dbi);
+    });
   const dayForLoad = day.filter((a) => a.status !== 'cancelled');
   const name = (await db.getMeta('masterName')) || 'Мастер';
   const doneToday = day.filter((a) => a.status === 'done');
@@ -646,6 +659,39 @@ async function renderToday(db, meta, go) {
     ? null
     : License.trialDaysLeft(meta);
 
+  const staleBlock = staleOpen.length
+    ? `<h2 style="margin:20px 0 10px;font-size:1rem">Незакрытые записи</h2>
+      <div class="list-gap">
+        ${staleOpen
+          .map((a) => {
+            const c = clientMap[a.clientId];
+            const whenLine = `${esc(F.formatDateISO(a.date))} · ${esc(F.formatTime(a.time))}`;
+            const clientLine = esc(String(c?.name || 'Клиент').trim() || 'Клиент');
+            const svc = esc(String(a.serviceNameSnapshot || '').trim());
+            const price = F.money(Number(a.priceRub) || 0);
+            const diff = a.difficulty || '—';
+            return `<article class="card record-card" data-open="${a.id}">
+              <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px">
+                <div>
+                  <div style="font-weight:700">${whenLine}</div>
+                  <div class="status-line">${clientLine}</div>
+                </div>
+                <div class="record-card__head-actions">
+                  <span class="${F.appointmentBadgeClass(a, nowMs)}">${esc(F.appointmentStatusLabel(a, nowMs))}</span>
+                </div>
+              </div>
+              <div style="margin-top:8px;font-weight:600">${svc}</div>
+              <div class="status-line">${price} · сложн. ${diff}</div>
+              <div class="record-card__appt-actions">
+                <button type="button" class="btn btn-secondary" style="padding:10px" data-edit="${a.id}">Редактировать</button>
+                <button type="button" class="btn btn-primary" style="padding:10px" data-done="${a.id}">Завершить</button>
+              </div>
+            </article>`;
+          })
+          .join('')}
+      </div>`
+    : '';
+
   const cards = sorted.length
     ? sorted
         .map((a) => {
@@ -667,6 +713,7 @@ async function renderToday(db, meta, go) {
           ${
             a.status !== 'done' && a.status !== 'cancelled'
               ? `<div class="record-card__appt-actions">
+              <button type="button" class="btn btn-secondary" style="padding:10px" data-edit="${a.id}">Редактировать</button>
               <button type="button" class="btn btn-primary" style="padding:10px" data-done="${a.id}">Завершить</button>
               ${
                 appointmentCanReschedule(a)
@@ -675,7 +722,10 @@ async function renderToday(db, meta, go) {
               }
             </div>`
               : a.status === 'done'
-                ? `<div class="status-line">Оплачено: ${F.money(a.receivedRub || 0)} · Прибыль: ${F.money(a.profitRub || 0)}</div>`
+                ? `<div class="status-line">Оплачено: ${F.money(a.receivedRub || 0)} · Прибыль: ${F.money(a.profitRub || 0)}</div>
+                  <div class="record-card__appt-actions">
+                    <button type="button" class="btn btn-secondary" style="padding:10px" data-edit="${a.id}">Редактировать</button>
+                  </div>`
                 : ''
           }
         </article>`;
@@ -778,6 +828,7 @@ async function renderToday(db, meta, go) {
     </div>
     <button type="button" class="btn btn-primary" id="btn-new-appt">＋ Новая запись</button>
     ${remindersBlock}
+    ${staleBlock}
     <h2 style="margin:20px 0 10px;font-size:1rem">Записи на сегодня</h2>
     <div class="list-gap">${cards}</div>
     ${serviceBlock}
@@ -978,6 +1029,15 @@ export function attachToday(shell, db, go, refresh) {
       go(`complete-${id}?from=today`);
     });
   });
+  root.querySelectorAll('[data-edit]').forEach((b) => {
+    b.addEventListener('click', (e) => {
+      e.stopPropagation();
+      sessionStorage.removeItem(WIZARD_KEY);
+      const id = b.getAttribute('data-edit');
+      if (!id) return;
+      go(`edit-${id}?from=today`);
+    });
+  });
   root.querySelectorAll('[data-reminder-done]').forEach((b) => {
     b.addEventListener('click', async (e) => {
       e.stopPropagation();
@@ -1075,11 +1135,14 @@ async function renderRecords(db, go) {
           <div style="margin-top:8px;font-weight:600">${esc(a.serviceNameSnapshot || '')}</div>
           <div class="status-line">${F.money(a.priceRub || 0)} · сложн. ${a.difficulty || '—'}</div>
           ${
-            appointmentCanReschedule(a)
-              ? `<div style="margin-top:8px">
-              <button type="button" class="btn btn-reschedule" data-reschedule-appt="${a.id}">Перенести</button>
+            `<div class="record-card__appt-actions" style="margin-top:8px">
+              <button type="button" class="btn btn-secondary" style="padding:10px" data-edit="${a.id}">Редактировать</button>
+              ${
+                appointmentCanReschedule(a)
+                  ? `<button type="button" class="btn btn-reschedule" data-reschedule-appt="${a.id}">Перенести</button>`
+                  : ''
+              }
             </div>`
-              : ''
           }
         </article>`;
         })
@@ -1098,6 +1161,15 @@ export function attachRecords(shell, db, go, refresh) {
     el.addEventListener('click', (e) => {
       if (e.target.closest('button')) return;
       go(`complete-${el.getAttribute('data-rec')}?from=records`);
+    });
+  });
+  root.querySelectorAll('[data-edit]').forEach((b) => {
+    b.addEventListener('click', (e) => {
+      e.stopPropagation();
+      sessionStorage.removeItem(WIZARD_KEY);
+      const id = b.getAttribute('data-edit');
+      if (!id) return;
+      go(`edit-${id}?from=records`);
     });
   });
   attachAppointmentDeleteButtons(root, db, go, refresh);
@@ -2508,12 +2580,39 @@ function saveWizard(w) {
   sessionStorage.setItem(WIZARD_KEY, JSON.stringify(w));
 }
 
-async function renderWizard(root, db, go) {
+async function renderWizard(root, db, go, opts = {}) {
   let w = loadWizard();
   let clients = await db.listClients();
   /** Перечитываем при каждом paint(), чтобы после правок прайса список в мастере не устаревал. */
   let services = await db.listServices();
   let materials = await db.listMaterials();
+
+  const editId = Number(opts.editAppointmentId) || null;
+  if (editId && Number(w.editingAppointmentId) !== editId) {
+    const ap = await db.getAppointment(editId);
+    if (ap) {
+      w = {
+        step: 5,
+        editingAppointmentId: editId,
+        clientId: ap.clientId,
+        clientPickSource: 'existing',
+        serviceId: ap.serviceId ?? null,
+        catalogServicePicked: ap.serviceId != null,
+        serviceNameSnapshot: ap.serviceNameSnapshot || '',
+        date: ap.date || F.todayISO(),
+        time: ap.time || '',
+        difficulty: ap.difficulty || 2,
+        tags: ap.difficultyTags || [],
+        plannedMinutes: ap.plannedMinutes || 120,
+        priceRub: ap.priceRub || 0,
+        materialsPlan: ap.materialsPlan || [],
+        serviceAdjustNote: ap.notes || '',
+        comment: ap.notes || '',
+        status: ap.status || 'scheduled',
+      };
+      saveWizard(w);
+    }
+  }
 
   /** Поиск клиента по имени и телефону (частичное совпадение, без регистра; цифры — по подстроке в номере). */
   function clientMatchesWizardQuery(c, rawQuery) {
@@ -3166,7 +3265,8 @@ async function renderWizard(root, db, go) {
       const rawKey = appointmentDateKeyIso(w.date || F.todayISO());
       const dateIsoForUi = /^(\d{4})-(\d{2})-(\d{2})$/.test(rawKey) ? rawKey : F.todayISO();
       const dateStr = dateIsoForUi;
-      const initialBusyHtml = await htmlBusyDaySlotsBody(db, dateStr, null);
+      const excludeId = Number(w.editingAppointmentId) || null;
+      const initialBusyHtml = await htmlBusyDaySlotsBody(db, dateStr, excludeId);
       const fallbackTime = F.defaultNewAppointmentTimeHHMM(dateStr);
       if (w.time == null || String(w.time).trim() === '') {
         w.time = fallbackTime;
@@ -3183,10 +3283,23 @@ async function renderWizard(root, db, go) {
           return `<option value="${v}"${sel}>${String(v).padStart(2, '0')}</option>`;
         })
         .join('');
+      const initialStatus = String(w.status || 'scheduled');
+      const statusOpts = [
+        ['scheduled', 'Запланирована'],
+        ['cancelled', 'Отменена'],
+        ['done', 'Завершена (посчитать прибыль)'],
+      ]
+        .map(([val, label]) => {
+          const sel = val === initialStatus ? ' selected' : '';
+          return `<option value="${val}"${sel}>${label}</option>`;
+        })
+        .join('');
+      const headerTitle = w.editingAppointmentId ? 'Редактирование записи' : 'Дата и время';
+
       root.innerHTML = `<div class="content">
         <div class="back-row"><button type="button" class="btn btn-ghost" style="width:auto" data-w-back>Назад</button></div>
         <div class="step-bar">Шаг 4 из 4 · Дата и время</div>
-        <h1 style="margin-top:0;font-size:1.35rem">Дата и время</h1>
+        <h1 style="margin-top:0;font-size:1.35rem">${headerTitle}</h1>
         ${wizardServiceSummaryCard(w, true)}
         <label class="label" for="w-date">Дата</label>
         <p class="muted" style="font-size:0.82rem;margin:-4px 0 6px;line-height:1.4">Введите дату в формате ДД.ММ.ГГГГ</p>
@@ -3207,6 +3320,12 @@ async function renderWizard(root, db, go) {
             <select class="field" id="w-tm">${minuteOpts}</select>
           </div>
         </div>
+        <label class="label" for="w-status" style="margin-top:14px">Статус записи</label>
+        <select class="field" id="w-status">${statusOpts}</select>
+        <label class="label" for="w-comment" style="margin-top:14px">Комментарий</label>
+        <textarea class="field" id="w-comment" rows="3" placeholder="Например: клиент опоздал, попросила сделать плотнее">${esc(
+          String(w.comment || w.serviceAdjustNote || '').trim()
+        )}</textarea>
         <div class="wizard-footer">
           <button type="button" class="btn btn-primary" id="w5-save">Сохранить запись</button>
         </div>
@@ -3219,7 +3338,7 @@ async function renderWizard(root, db, go) {
         const parsed = F.parseDateRu(raw);
         const dk = parsed || lastBusyDateKey;
         if (parsed) lastBusyDateKey = parsed;
-        if (wBusyBody) wBusyBody.innerHTML = await htmlBusyDaySlotsBody(db, dk, null);
+        if (wBusyBody) wBusyBody.innerHTML = await htmlBusyDaySlotsBody(db, dk, excludeId);
       };
       wDateEl?.addEventListener('input', () => {
         void reloadWizardBusy();
@@ -3258,13 +3377,14 @@ async function renderWizard(root, db, go) {
           toast('Введите дату в формате ДД.ММ.ГГГГ.');
           return;
         }
+        const desiredStatus = String(root.querySelector('#w-status')?.value || 'scheduled');
         const svcIdCatalog =
           w.catalogServicePicked === false
             ? null
             : w.serviceId != null && Number(w.serviceId) > 0
               ? w.serviceId
               : null;
-        const appt = {
+        const apptCore = {
           clientId: w.clientId,
           serviceId: svcIdCatalog,
           serviceNameSnapshot: w.serviceNameSnapshot,
@@ -3277,18 +3397,8 @@ async function renderWizard(root, db, go) {
           difficultyTags: w.tags || [],
           plannedMinutes: w.plannedMinutes || 120,
           priceRub: w.priceRub || 0,
-          prepaymentRub: 0,
-          status: 'scheduled',
           materialsPlan: w.materialsPlan || [],
-          materialsFact: null,
-          receivedRub: null,
-          actualMinutes: null,
-          actualStartAt: null,
-          actualEndAt: null,
-          materialCostRub: null,
-          profitRub: null,
-          completedAt: null,
-          notes: String(w.serviceAdjustNote || '').trim(),
+          notes: String(root.querySelector('#w-comment')?.value || '').trim(),
         };
 
         const cid = Number(w.clientId);
@@ -3324,21 +3434,58 @@ async function renderWizard(root, db, go) {
           return;
         }
 
-        if (F.isAppointmentStartInPastToday(appt.date, appt.time)) {
-          toast('Вы выбрали время, которое уже прошло. Измените время записи.');
+        if (desiredStatus === 'scheduled' && F.isAppointmentStartInPastToday(apptCore.date, apptCore.time)) {
+          toast('Вы выбрали время, которое уже прошло. Поставьте статус «Завершена» или измените время.');
           return;
         }
 
-        const existing = await db.listAppointments();
-        const conflictRow = pickConflictRowWithLatestEnd(appt, existing, null);
-        if (conflictRow) {
-          toastOverlapFromConflictRow(conflictRow);
-          return;
+        const editingId = Number(w.editingAppointmentId) || null;
+        const shouldCheckConflicts = desiredStatus === 'scheduled';
+        if (shouldCheckConflicts) {
+          const existing = await db.listAppointments();
+          const conflictRow = pickConflictRowWithLatestEnd(apptCore, existing, editingId);
+          if (conflictRow) {
+            toastOverlapFromConflictRow(conflictRow);
+            return;
+          }
         }
 
-        await db.addAppointment(appt);
+        let savedId = editingId;
+        if (editingId) {
+          const fresh = await db.getAppointment(editingId);
+          if (!fresh) {
+            toast('Запись не найдена.');
+            return;
+          }
+          await db.putAppointment({
+            ...fresh,
+            ...apptCore,
+            status: desiredStatus === 'done' ? fresh.status || 'scheduled' : desiredStatus,
+          });
+        } else {
+          const apptNew = {
+            ...apptCore,
+            prepaymentRub: 0,
+            status: desiredStatus === 'done' ? 'scheduled' : desiredStatus,
+            materialsFact: null,
+            receivedRub: null,
+            actualMinutes: null,
+            actualStartAt: null,
+            actualEndAt: null,
+            materialCostRub: null,
+            profitRub: null,
+            completedAt: null,
+          };
+          savedId = await db.addAppointment(apptNew);
+        }
+
         sessionStorage.removeItem(WIZARD_KEY);
         toast('Запись сохранена');
+        if (desiredStatus === 'done' && savedId) {
+          toast('Осталось нажать «Завершить», чтобы посчитать прибыль.');
+          go(`complete-${savedId}?from=today`);
+          return;
+        }
         go('today');
       });
     }
