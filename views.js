@@ -541,7 +541,7 @@ function renderLock() {
     <p class="muted" style="text-align:center;margin-top:14px;line-height:1.45">Чтобы продолжить работу, введите код доступа. Ваши данные сохранены на устройстве.</p>
     ${htmlDemoTelegramHint({ centered: true })}
     <label class="label" for="lk-code" style="margin-top:14px">Код доступа</label>
-    <input class="field" id="lk-code" placeholder="Например: KOSO-FULL-2026" autocomplete="off" />
+    <input class="field" id="lk-code" placeholder="Например: KOSO-FULL-2026-A7K3" autocomplete="off" />
     <button type="button" class="btn btn-primary" id="lk-btn" style="width:100%;margin-top:10px">Активировать</button>
     <button type="button" class="btn btn-secondary" id="lk-export" style="width:100%;margin-top:10px">Выгрузить данные</button>
   </div>`;
