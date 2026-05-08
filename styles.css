@@ -223,6 +223,28 @@ button.c-mat-remove:active {
   border: 1px solid var(--line);
 }
 
+.material-detail__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 16px;
+  align-items: stretch;
+}
+
+.material-detail__actions .btn {
+  width: auto;
+}
+
+.material-detail__actions .btn-primary {
+  flex: 1;
+  min-width: 160px;
+}
+
+.material-detail__actions .btn-secondary {
+  flex: 0 1 auto;
+  min-width: 140px;
+}
+
 /* Вспомогательное действие в карточке записи — перенос (слабее «Завершить») */
 .btn.btn-reschedule {
   width: auto;

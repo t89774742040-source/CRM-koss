@@ -12,6 +12,7 @@ import {
   attachMaterialDetail,
   attachPurchase,
   attachAddMaterial,
+  attachEditMaterial,
   attachFinance,
   attachServices,
   attachAddService,
@@ -48,6 +49,7 @@ async function refreshMeta() {
 function parseRoute(r) {
   const base = (r || 'today').split('?')[0];
   if (base.startsWith('client-')) return { view: 'client', id: base.slice(7) };
+  if (base.startsWith('edit-material-')) return { view: 'edit-material', id: base.slice(14) };
   if (base.startsWith('material-')) return { view: 'material', id: base.slice(9) };
   if (base.startsWith('service-')) return { view: 'service', id: base.slice(8) };
   if (base.startsWith('complete-')) return { view: 'complete', id: base.slice(9) };
@@ -94,6 +96,9 @@ async function render() {
       break;
     case 'add-material':
       attachAddMaterial(shell, db, go, refreshMeta);
+      break;
+    case 'edit-material':
+      attachEditMaterial(shell, db, go, p.id, refreshMeta);
       break;
     case 'services':
       attachServices(shell, db, go, refreshMeta);

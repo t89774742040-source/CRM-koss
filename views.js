@@ -392,6 +392,7 @@ function completeReturnTarget(route) {
 function parseRoute(r) {
   const base = (r || 'today').split('?')[0];
   if (base.startsWith('client-')) return { view: 'client', id: base.slice(7) };
+  if (base.startsWith('edit-material-')) return { view: 'edit-material', id: base.slice(14) };
   if (base.startsWith('material-')) return { view: 'material', id: base.slice(9) };
   if (base.startsWith('service-')) return { view: 'service', id: base.slice(8) };
   if (base.startsWith('complete-')) return { view: 'complete', id: base.slice(9) };
@@ -472,6 +473,7 @@ export async function mount(shell, ctx) {
     parsed.view === 'complete' ||
     parsed.view === 'purchase' ||
     parsed.view === 'add-material' ||
+    parsed.view === 'edit-material' ||
     parsed.view === 'add-service';
 
   const activeNav =
@@ -510,6 +512,8 @@ export async function mount(shell, ctx) {
     root.innerHTML = await renderPurchase(db, go);
   } else if (parsed.view === 'add-material') {
     root.innerHTML = await renderAddMaterial();
+  } else if (parsed.view === 'edit-material') {
+    root.innerHTML = await renderEditMaterial(db, parsed.id, go);
   } else if (parsed.view === 'finance') {
     root.innerHTML = await renderFinance(db, go);
   } else if (parsed.view === 'settings') {
@@ -1699,7 +1703,10 @@ async function renderMaterialDetail(db, id, go) {
       }
       ${mat.comment ? `<div class="status-line">Комментарий: ${esc(mat.comment)}</div>` : ''}
     </div>
-    <button type="button" class="btn btn-primary" id="md-purchase">＋ Пополнить склад</button>
+    <div class="material-detail__actions">
+      <button type="button" class="btn btn-secondary" id="md-edit">Редактировать</button>
+      <button type="button" class="btn btn-primary" id="md-purchase">＋ Пополнить склад</button>
+    </div>
   </div>`;
 }
 
@@ -1708,6 +1715,9 @@ export function attachMaterialDetail(shell, go, id) {
   root.querySelector('[data-back]')?.addEventListener('click', (e) => {
     e.preventDefault();
     go('materials');
+  });
+  root.querySelector('#md-edit')?.addEventListener('click', () => {
+    go(`edit-material-${encodeURIComponent(id)}`);
   });
   root.querySelector('#md-purchase')?.addEventListener('click', () => {
     go(`purchase?materialId=${encodeURIComponent(id)}`);
@@ -2281,6 +2291,90 @@ async function renderAddMaterial() {
   </div>`;
 }
 
+async function renderEditMaterial(db, id, go) {
+  const mat = await db.getMaterial(Number(id));
+  if (!mat || mat.isActive === false) {
+    return `<div class="content"><p class="empty-hint">Материал не найден</p></div>`;
+  }
+  const unitCode = mat.unit === 'pcs' || mat.baseUnit === 'pcs' ? 'pcs' : 'g';
+  const packSizeDefault =
+    unitCode === 'pcs'
+      ? Math.max(0, Number(mat.packageQtyPcs) || 0)
+      : Math.max(0, Number(mat.packageWeightGrams) || 0);
+  const packPriceDefault = Math.max(0, Number(mat.packagePrice) || 0);
+  const typeStored = String(mat.materialType || '').trim() || 'прочее';
+  const seriesStored = String(mat.materialSeries ?? '').trim();
+  const colorStored = String(
+    mat.materialColorCode ?? mat.materialColor ?? ''
+  ).trim();
+  const inList = MATERIAL_TYPES.includes(typeStored);
+  const typeOptions = MATERIAL_TYPES.map((v) => {
+    const sel = v === typeStored ? ' selected' : '';
+    return `<option value="${esc(v)}"${sel}>${esc(v)}</option>`;
+  }).join('');
+  const extraTypeOpt =
+    inList || !typeStored
+      ? ''
+      : `<option value="${esc(typeStored)}" selected>${esc(
+          typeStored
+        )}</option>`;
+  const unitLocked = Number(mat.stock) > 0;
+  const minStock = Math.max(0, Number(mat.minStock) || 0);
+  const stockDisp = Math.max(0, Number(mat.stock) || 0);
+  const commentEsc = esc(String(mat.comment || ''));
+
+  return `<div class="content">
+    <div class="back-row"><a href="#material-${esc(
+      String(id)
+    )}" data-back>← К материалу</a></div>
+    <h1 style="margin:0 0 12px;font-size:1.35rem">Редактирование</h1>
+    <div class="card compact" style="margin-bottom:16px">
+      <div class="status-line">Остаток на складе (меняется только приходом и списанием): <strong>${esc(
+        String(stockDisp)
+      )} ${esc(unitCodeShort(unitCode))}</strong></div>
+      <div class="status-line">Цена списания сейчас: ${F.money(
+        mat.pricePerUnit
+      )} — при новом приходе пересчитается из партии (здесь не меняется)</div>
+    </div>
+    <label class="label" for="em-type">Тип материала</label>
+    <select class="field" id="em-type">${extraTypeOpt}${typeOptions}</select>
+    <label class="label" for="em-series">Название / серия</label>
+    <input class="field" id="em-series" value="${esc(
+      seriesStored
+    )}" placeholder="Например: Неон, Омбре" />
+    <label class="label" for="em-color">Цвет / номер оттенка</label>
+    <input class="field" id="em-color" value="${esc(
+      colorStored
+    )}" placeholder="Например: 2365" />
+    <label class="label" for="em-unit">Единица списания</label>
+    <select class="field" id="em-unit" ${unitLocked ? 'disabled' : ''}>
+      <option value="g"${unitCode === 'g' ? ' selected' : ''}>граммы</option>
+      <option value="pcs"${
+        unitCode === 'pcs' ? ' selected' : ''
+      }>штуки</option>
+    </select>
+    ${
+      unitLocked
+        ? `<p class="muted" style="margin:6px 0 0;font-size:0.88rem">Пока есть остаток, единицу учёта (г / шт) менять нельзя — число на складе должно оставаться в той же мере.</p>`
+        : ''
+    }
+    <label class="label" for="em-pack-price">Цена стандартной упаковки (подставляется в приходе)</label>
+    <input class="field" id="em-pack-price" type="number" min="0" step="1" value="${packPriceDefault}" />
+    <label class="label" id="em-pack-size-label" for="em-pack-size">Вес упаковки (граммы)</label>
+    <input class="field" id="em-pack-size" type="number" min="0" step="1" value="${packSizeDefault}" />
+    <p class="status-line" id="em-price-preview">≈ ${F.money(
+      packSizeDefault > 0 ? packPriceDefault / packSizeDefault : 0
+    )} за ${
+    unitCode === 'g' ? 'грамм' : 'штуку'
+  } — справочно, фактическая цена списания после прихода</p>
+    <label class="label" id="em-min-label" for="em-min">Минимальный остаток</label>
+    <input class="field" id="em-min" type="number" min="0" step="1" value="${minStock}" />
+    <label class="label" for="em-comment">Комментарий</label>
+    <textarea class="field" id="em-comment" placeholder="Необязательно">${commentEsc}</textarea>
+    <button type="button" class="btn btn-primary" id="em-save">Сохранить</button>
+  </div>`;
+}
+
 export function attachAddMaterial(shell, db, go, refresh) {
   const root = shell.querySelector('#app-root') || shell;
   const qs = location.hash.includes('?') ? location.hash.split('?')[1] : '';
@@ -2360,6 +2454,112 @@ export function attachAddMaterial(shell, db, go, refresh) {
     toast('Материал добавлен');
     await refresh();
     go(ret === 'new' ? 'new' : 'materials');
+  });
+}
+
+export function attachEditMaterial(shell, db, go, id, refresh) {
+  const root = shell.querySelector('#app-root') || shell;
+  root.querySelector('[data-back]')?.addEventListener('click', (e) => {
+    e.preventDefault();
+    go(`material-${id}`);
+  });
+  const packPriceEl = root.querySelector('#em-pack-price');
+  const packSizeEl = root.querySelector('#em-pack-size');
+  const previewEl = root.querySelector('#em-price-preview');
+  const unitEl = root.querySelector('#em-unit');
+  const packSizeLabelEl = root.querySelector('#em-pack-size-label');
+  const minLabelEl = root.querySelector('#em-min-label');
+
+  const syncUnitUi = () => {
+    const unitCode = unitEl?.value === 'pcs' ? 'pcs' : 'g';
+    const isWeight = unitCode === 'g';
+    if (packSizeLabelEl) {
+      packSizeLabelEl.textContent = isWeight
+        ? 'Вес упаковки (граммы)'
+        : 'Количество в упаковке (шт)';
+    }
+    if (minLabelEl) {
+      minLabelEl.textContent = `Минимальный остаток (${isWeight ? 'в граммах' : 'в штуках'})`;
+    }
+    recalcPreview();
+  };
+
+  const recalcPreview = () => {
+    const packPrice = Math.max(0, Number(packPriceEl?.value) || 0);
+    const packageSize = Math.max(0, Number(packSizeEl?.value) || 0);
+    const basePrice = packageSize > 0 ? packPrice / packageSize : 0;
+    const u = unitEl?.value === 'pcs' ? 'pcs' : 'g';
+    if (previewEl) {
+      previewEl.textContent = `≈ ${F.money(basePrice)} за ${
+        u === 'g' ? 'грамм' : 'штуку'
+      } — справочно; цена списания обновится после прихода`;
+    }
+  };
+
+  unitEl?.addEventListener('change', syncUnitUi);
+  packPriceEl?.addEventListener('input', recalcPreview);
+  packSizeEl?.addEventListener('input', recalcPreview);
+  syncUnitUi();
+  recalcPreview();
+
+  root.querySelector('#em-save')?.addEventListener('click', async () => {
+    const cur = await db.getMaterial(Number(id));
+    if (!cur || cur.isActive === false) {
+      toast('Материал не найден');
+      return;
+    }
+    const typeVal = String(root.querySelector('#em-type')?.value ?? '').trim();
+    if (!typeVal) {
+      toast('Выберите тип материала.');
+      return;
+    }
+    const seriesTrim = String(root.querySelector('#em-series')?.value ?? '').trim();
+    if (!seriesTrim) {
+      toast('Введите название или серию материала.');
+      return;
+    }
+    const colorTrim = String(root.querySelector('#em-color')?.value ?? '').trim();
+    const effectiveUnit = unitEl?.disabled
+      ? cur.unit === 'pcs' || cur.baseUnit === 'pcs'
+        ? 'pcs'
+        : 'g'
+      : unitEl?.value === 'pcs'
+        ? 'pcs'
+        : 'g';
+
+    const packPrice = Math.max(0, Number(packPriceEl?.value) || 0);
+    const packageSize = Math.max(0, Number(packSizeEl?.value) || 0);
+    const minStock = Math.max(0, Number(root.querySelector('#em-min')?.value) || 0);
+    const name = buildMaterialCatalogDisplayName(typeVal, seriesTrim, colorTrim);
+
+    const row = {
+      ...cur,
+      id: cur.id,
+      name,
+      materialType: typeVal,
+      materialSeries: seriesTrim,
+      materialColor: colorTrim,
+      materialColorCode: colorTrim,
+      unit: effectiveUnit,
+      baseUnit: effectiveUnit,
+      packagePrice: packPrice,
+      packageWeightGrams: effectiveUnit === 'g' ? packageSize : 0,
+      packageQtyPcs: effectiveUnit === 'pcs' ? packageSize : 0,
+      minStock,
+      comment: String(root.querySelector('#em-comment')?.value ?? '').trim(),
+      stock: cur.stock,
+      pricePerUnit: cur.pricePerUnit,
+    };
+    try {
+      await db.putMaterial(row);
+    } catch (e) {
+      console.error(e);
+      toast('Не удалось сохранить');
+      return;
+    }
+    toast('Сохранено');
+    await refresh();
+    go(`material-${id}`);
   });
 }
 
