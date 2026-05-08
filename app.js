@@ -15,6 +15,7 @@ import {
   attachFinance,
   attachServices,
   attachAddService,
+  attachServiceDetail,
   attachSettings,
 } from './views.js';
 
@@ -48,6 +49,7 @@ function parseRoute(r) {
   const base = (r || 'today').split('?')[0];
   if (base.startsWith('client-')) return { view: 'client', id: base.slice(7) };
   if (base.startsWith('material-')) return { view: 'material', id: base.slice(9) };
+  if (base.startsWith('service-')) return { view: 'service', id: base.slice(8) };
   if (base.startsWith('complete-')) return { view: 'complete', id: base.slice(9) };
   return { view: base || 'today' };
 }
@@ -95,6 +97,9 @@ async function render() {
       break;
     case 'services':
       attachServices(shell, db, go, refreshMeta);
+      break;
+    case 'service':
+      attachServiceDetail(shell, db, go, p.id, refreshMeta);
       break;
     case 'add-service':
       attachAddService(shell, db, go, refreshMeta);

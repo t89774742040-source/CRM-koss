@@ -23,6 +23,21 @@ export function formatDateISO(iso) {
 }
 
 /**
+ * Единое отображение даты для UI: ДД.ММ.ГГГГ.
+ * - YYYY-MM-DD → ДД.ММ.ГГГГ
+ * - ДД.ММ.ГГГГ → как есть
+ * - YYYY-MM-DDTHH:mm:ss... → берём только YYYY-MM-DD
+ */
+export function formatDateRu(dateLike) {
+  const s = String(dateLike ?? '').trim();
+  if (!s) return '—';
+  if (/^\d{2}\.\d{2}\.\d{4}$/.test(s)) return s;
+  const iso = s.split('T')[0];
+  if (/^\d{4}-\d{2}-\d{2}$/.test(iso)) return formatDateISO(iso);
+  return s;
+}
+
+/**
  * Разбор даты из строки ДД.ММ.ГГГГ (допускаются однозначные день/месяц).
  * Возвращает YYYY-MM-DD или null.
  */
@@ -174,6 +189,7 @@ export function appointmentTimesOverlapSameDay(apA, apB) {
 export function appointmentSchedulePhase(ap, nowMs = Date.now()) {
   if (ap.status === 'done') return 'done';
   if (ap.status === 'cancelled') return 'cancelled';
+  if (ap.status === 'no_show') return 'no_show';
   const dateStr = (ap.date || '').split('T')[0];
   if (dateStr && dateStr !== todayISO()) return 'upcoming';
   const w = appointmentWindowMs(ap.date, ap.time, ap.plannedMinutes);
@@ -187,6 +203,7 @@ export function appointmentStatusLabel(ap, nowMs = Date.now()) {
   const phase = appointmentSchedulePhase(ap, nowMs);
   if (phase === 'done') return 'Завершено';
   if (phase === 'cancelled') return 'Отмена';
+  if (phase === 'no_show') return 'Не пришёл';
   if (phase === 'in_progress') return 'В работе';
   return 'Запланировано';
 }
@@ -196,6 +213,7 @@ export function appointmentBadgeClass(ap, nowMs = Date.now()) {
   const phase = appointmentSchedulePhase(ap, nowMs);
   if (phase === 'done') return 'badge ok';
   if (phase === 'cancelled') return 'badge';
+  if (phase === 'no_show') return 'badge warn';
   if (phase === 'in_progress') return 'badge';
   return 'badge ok';
 }
@@ -226,9 +244,39 @@ export function phoneDigitCount(s) {
   return String(s ?? '').replace(/\D/g, '').length;
 }
 
-/** Минимум цифр для валидного телефона клиента при ручном вводе. */
-export const CLIENT_PHONE_MIN_DIGITS = 10;
+/** Оставляет только цифры (убирает пробелы, +, скобки, дефисы). */
+export function normalizeClientPhone(raw) {
+  return String(raw ?? '').replace(/\D/g, '');
+}
 
+/**
+ * Проверка телефона РФ для CRM:
+ * - после очистки ровно 11 цифр
+ * - начинается с 7 или 8
+ * Возвращает { ok, normalized }.
+ */
+export function validateClientPhoneRu(raw) {
+  const digits = normalizeClientPhone(raw);
+  if (digits.length !== 11) return { ok: false, normalized: digits };
+  if (digits[0] !== '7' && digits[0] !== '8') return { ok: false, normalized: digits };
+  return { ok: true, normalized: digits };
+}
+
+/** Красивый вывод телефона для UI (в базе хранится просто 11 цифр). */
+export function formatClientPhonePretty(raw) {
+  const digits = normalizeClientPhone(raw);
+  if (digits.length !== 11) return String(raw ?? '').trim();
+  const first = digits[0];
+  if (first !== '7' && first !== '8') return String(raw ?? '').trim();
+  const a = digits.slice(1, 4);
+  const b = digits.slice(4, 7);
+  const c = digits.slice(7, 9);
+  const d = digits.slice(9, 11);
+  const head = first === '7' ? '+7' : '8';
+  return `${head} (${a}) ${b}-${c}-${d}`;
+}
+
+/** Совместимость со старым названием (теперь строгая проверка). */
 export function clientPhoneHasEnoughDigits(s) {
-  return phoneDigitCount(s) >= CLIENT_PHONE_MIN_DIGITS;
+  return validateClientPhoneRu(s).ok;
 }

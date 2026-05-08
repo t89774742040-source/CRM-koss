@@ -104,7 +104,16 @@ function appointmentRowIsFinished(a) {
 
 /** Перенос только запланированной записи: без фактического начала и окончания. */
 function appointmentCanReschedule(a) {
-  if (!a || a.status === 'cancelled') return false;
+  if (!a || a.status === 'cancelled' || a.status === 'no_show') return false;
+  if (appointmentRowIsFinished(a)) return false;
+  const started = Number(a.actualStartAt);
+  if (Number.isFinite(started) && started > 0) return false;
+  return true;
+}
+
+function appointmentCanCancel(a) {
+  if (!a) return false;
+  if (a.status !== 'scheduled') return false;
   if (appointmentRowIsFinished(a)) return false;
   const started = Number(a.actualStartAt);
   if (Number.isFinite(started) && started > 0) return false;
@@ -160,7 +169,7 @@ function pluralizeRecords(count) {
 function appointmentsOnDayActive(appointments, dateKey, excludeAppointmentId) {
   return appointments.filter((a) => {
     if (appointmentDateKeyIso(a.date) !== dateKey) return false;
-    if (a.status === 'done' || a.status === 'cancelled') return false;
+    if (a.status === 'done' || a.status === 'cancelled' || a.status === 'no_show') return false;
     if (excludeAppointmentId != null && Number(a.id) === Number(excludeAppointmentId)) return false;
     return true;
   });
@@ -202,7 +211,7 @@ function pickConflictRowWithLatestEnd(candidate, appointments, excludeAppointmen
   let bestEnd = -1;
   for (const row of appointments) {
     if (excludeAppointmentId != null && Number(row.id) === Number(excludeAppointmentId)) continue;
-    if (row.status === 'done' || row.status === 'cancelled') continue;
+    if (row.status === 'done' || row.status === 'cancelled' || row.status === 'no_show') continue;
     if (!F.appointmentTimesOverlapSameDay(candidate, row)) continue;
     const win = F.appointmentWindowMs(row.date, row.time, row.plannedMinutes);
     if (!win) continue;
@@ -212,6 +221,40 @@ function pickConflictRowWithLatestEnd(candidate, appointments, excludeAppointmen
     }
   }
   return best;
+}
+
+function chooseCancelReasonDialog() {
+  const wrap = document.createElement('div');
+  wrap.className = 'mat-pick-sheet is-open';
+  wrap.setAttribute('role', 'dialog');
+  wrap.setAttribute('aria-modal', 'true');
+  wrap.innerHTML = `<div class="mat-pick-sheet__backdrop" data-dismiss></div>
+    <div class="mat-pick-sheet__panel">
+      <div class="mat-pick-sheet__title">Отмена записи</div>
+      <p class="muted" style="margin:0 0 12px;line-height:1.45">Выберите причину:</p>
+      <div style="display:flex;flex-direction:column;gap:10px">
+        <button type="button" class="btn btn-secondary" data-reason="cancelled">Клиент отменил</button>
+        <button type="button" class="btn btn-secondary" data-reason="no_show">Клиент не пришёл</button>
+        <button type="button" class="btn btn-ghost" data-reason="delete">Создано ошибочно</button>
+        <button type="button" class="btn btn-secondary" data-reason="" data-dismiss>Отмена</button>
+      </div>
+    </div>`;
+  document.body.appendChild(wrap);
+
+  return new Promise((resolve) => {
+    const finish = (val) => {
+      wrap.remove();
+      resolve(val);
+    };
+    wrap.addEventListener('click', (ev) => {
+      const dis = ev.target.closest('[data-dismiss]');
+      if (dis) return finish(null);
+      const b = ev.target.closest('[data-reason]');
+      if (!b) return;
+      const r = String(b.getAttribute('data-reason') || '').trim();
+      finish(r || null);
+    });
+  });
 }
 
 function toastOverlapFromConflictRow(conflict) {
@@ -350,6 +393,7 @@ function parseRoute(r) {
   const base = (r || 'today').split('?')[0];
   if (base.startsWith('client-')) return { view: 'client', id: base.slice(7) };
   if (base.startsWith('material-')) return { view: 'material', id: base.slice(9) };
+  if (base.startsWith('service-')) return { view: 'service', id: base.slice(8) };
   if (base.startsWith('complete-')) return { view: 'complete', id: base.slice(9) };
   if (base.startsWith('edit-')) return { view: 'edit', id: base.slice(5) };
   return { view: base || 'today' };
@@ -433,6 +477,8 @@ export async function mount(shell, ctx) {
   const activeNav =
     parsed.view === 'client'
       ? 'clients'
+      : parsed.view === 'service'
+        ? 'services'
       : ['purchase', 'add-material', 'material'].includes(parsed.view)
         ? 'materials'
         : parsed.view === 'services'
@@ -456,6 +502,8 @@ export async function mount(shell, ctx) {
     root.innerHTML = await renderMaterials(db, go);
   } else if (parsed.view === 'services') {
     root.innerHTML = await renderServices(db);
+  } else if (parsed.view === 'service') {
+    root.innerHTML = await renderServiceDetail(db, parsed.id, go);
   } else if (parsed.view === 'add-service') {
     root.innerHTML = await renderAddService();
   } else if (parsed.view === 'purchase') {
@@ -584,7 +632,11 @@ async function renderToday(db, meta, go) {
   const day = appointments.filter((a) => a.date === t);
   const staleOpen = appointments
     .filter(
-      (a) => String(a.date || '') < t && a.status !== 'done' && a.status !== 'cancelled'
+      (a) =>
+        String(a.date || '') < t &&
+        a.status !== 'done' &&
+        a.status !== 'cancelled' &&
+        a.status !== 'no_show'
     )
     .sort((a, b) => {
       const da = `${a.date || ''} ${a.time || ''}`;
@@ -665,7 +717,7 @@ async function renderToday(db, meta, go) {
         ${staleOpen
           .map((a) => {
             const c = clientMap[a.clientId];
-            const whenLine = `${esc(F.formatDateISO(a.date))} · ${esc(F.formatTime(a.time))}`;
+            const whenLine = `${esc(F.formatDateRu(a.date))} · ${esc(F.formatTime(a.time))}`;
             const clientLine = esc(String(c?.name || 'Клиент').trim() || 'Клиент');
             const svc = esc(String(a.serviceNameSnapshot || '').trim());
             const price = F.money(Number(a.priceRub) || 0);
@@ -685,6 +737,14 @@ async function renderToday(db, meta, go) {
               <div class="record-card__appt-actions">
                 <button type="button" class="btn btn-secondary" style="padding:10px" data-edit="${a.id}">Редактировать</button>
                 <button type="button" class="btn btn-primary" style="padding:10px" data-done="${a.id}">Завершить</button>
+                ${
+                  appointmentCanReschedule(a)
+                    ? `<div class="record-card__appt-actions-row">
+                        <button type="button" class="btn btn-secondary" data-reschedule-appt="${a.id}">Перенести</button>
+                        <button type="button" class="btn btn-secondary" data-cancel-appt="${a.id}">Отменить</button>
+                      </div>`
+                    : ''
+                }
               </div>
             </article>`;
           })
@@ -711,13 +771,16 @@ async function renderToday(db, meta, go) {
           <div style="margin-top:6px;font-weight:600">${esc(a.serviceNameSnapshot || '')}</div>
           <div class="status-line">План: ${esc(F.minutesToLabel(a.plannedMinutes))} · Сложн.: ${a.difficulty || '—'}</div>
           ${
-            a.status !== 'done' && a.status !== 'cancelled'
+            a.status === 'scheduled'
               ? `<div class="record-card__appt-actions">
               <button type="button" class="btn btn-secondary" style="padding:10px" data-edit="${a.id}">Редактировать</button>
               <button type="button" class="btn btn-primary" style="padding:10px" data-done="${a.id}">Завершить</button>
               ${
                 appointmentCanReschedule(a)
-                  ? `<button type="button" class="btn btn-reschedule" data-reschedule-appt="${a.id}">Перенести</button>`
+                  ? `<div class="record-card__appt-actions-row">
+                      <button type="button" class="btn btn-secondary" data-reschedule-appt="${a.id}">Перенести</button>
+                      <button type="button" class="btn btn-secondary" data-cancel-appt="${a.id}">Отменить</button>
+                    </div>`
                   : ''
               }
             </div>`
@@ -785,7 +848,7 @@ async function renderToday(db, meta, go) {
   return `<header class="page-header">
     <div>
       <h1>Привет, ${esc(name)}</h1>
-      <p class="sub">${esc(F.formatDateISO(t))}</p>
+      <p class="sub">${esc(F.formatDateRu(t))}</p>
     </div>
     <button type="button" class="icon-btn" id="open-settings" aria-label="Настройки">⚙️</button>
   </header>
@@ -894,7 +957,14 @@ function openRescheduleAppointmentModal(ap, db, refresh, go) {
         <h2 id="rs-modal-title" style="margin: 0; font-size: 1.15rem">Перенос записи</h2>
       </div>
       <label class="label" for="rs-date">Новая дата</label>
-      <input class="field" id="rs-date" type="date" value="${esc(dateVal)}" />
+      <div class="date-overlay">
+        <input class="field date-overlay__ui" id="rs-date-ui" type="text" readonly value="${esc(
+          F.formatDateRu(dateVal)
+        )}" />
+        <input class="field date-overlay__native" id="rs-date" type="date" value="${esc(
+          dateVal
+        )}" aria-label="Новая дата" />
+      </div>
       <p class="card-title" style="margin-top: 14px">Новое время</p>
       <p class="muted" style="font-size: 0.84rem; margin: 0 0 10px; line-height: 1.4">Часы 00–23, минуты: 00, 15, 30 или 45.</p>
       <div class="row" style="align-items: flex-end">
@@ -932,9 +1002,17 @@ function openRescheduleAppointmentModal(ap, db, refresh, go) {
     if (e.target === wrap) close();
   });
   const rsDateInput = wrap.querySelector('#rs-date');
+  const rsDateUi = wrap.querySelector('#rs-date-ui');
   const rsBusyBody = wrap.querySelector('#rs-busy-slots-body');
+  wrap.querySelector('.date-overlay')?.addEventListener('click', () => {
+    try {
+      rsDateInput?.showPicker?.();
+    } catch {}
+    rsDateInput?.focus?.();
+  });
   const reloadRsBusy = async () => {
     const dk = appointmentDateKeyIso(rsDateInput?.value || dateVal);
+    if (rsDateUi) rsDateUi.value = F.formatDateRu(dk);
     if (rsBusyBody) rsBusyBody.innerHTML = await htmlBusyDaySlotsBody(db, dk, ap.id);
   };
   rsDateInput?.addEventListener('change', () => {
@@ -1038,6 +1116,40 @@ export function attachToday(shell, db, go, refresh) {
       go(`edit-${id}?from=today`);
     });
   });
+  root.querySelectorAll('[data-cancel-appt]').forEach((b) => {
+    b.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const id = Number(b.getAttribute('data-cancel-appt'));
+      if (!id) return;
+      void (async () => {
+        const row = await db.getAppointment(id);
+        if (!row || !appointmentCanCancel(row)) {
+          toast('Эту запись уже нельзя отменить.');
+          return;
+        }
+        const reason = await chooseCancelReasonDialog();
+        if (!reason) return;
+        if (reason === 'delete') {
+          const ok = await confirmDialog('Удалить запись? Это действие нельзя отменить.', {
+            leftLabel: 'Отмена',
+            rightLabel: 'Удалить',
+            focusLeft: true,
+          });
+          if (!ok) return;
+          await db.deleteAppointment(id);
+          await refresh();
+          go('today');
+          return;
+        }
+        row.status = reason === 'no_show' ? 'no_show' : 'cancelled';
+        row.cancelReason = reason;
+        row.cancelledAt = new Date().toISOString();
+        await db.putAppointment(row);
+        await refresh();
+        go('today');
+      })();
+    });
+  });
   root.querySelectorAll('[data-reminder-done]').forEach((b) => {
     b.addEventListener('click', async (e) => {
       e.stopPropagation();
@@ -1122,7 +1234,7 @@ async function renderRecords(db, go) {
           return `<article class="card record-card" data-rec="${a.id}">
           <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px">
             <div>
-              <div style="font-weight:700">${esc(F.formatDateISO(a.date))} · ${esc(F.formatTime(a.time))}</div>
+              <div style="font-weight:700">${esc(F.formatDateRu(a.date))} · ${esc(F.formatTime(a.time))}</div>
               <div class="status-line">${esc(c?.name || 'Клиент')}</div>
             </div>
             <div class="record-card__head-actions">
@@ -1135,14 +1247,20 @@ async function renderRecords(db, go) {
           <div style="margin-top:8px;font-weight:600">${esc(a.serviceNameSnapshot || '')}</div>
           <div class="status-line">${F.money(a.priceRub || 0)} · сложн. ${a.difficulty || '—'}</div>
           ${
-            `<div class="record-card__appt-actions" style="margin-top:8px">
-              <button type="button" class="btn btn-secondary" style="padding:10px" data-edit="${a.id}">Редактировать</button>
-              ${
-                appointmentCanReschedule(a)
-                  ? `<button type="button" class="btn btn-reschedule" data-reschedule-appt="${a.id}">Перенести</button>`
-                  : ''
-              }
-            </div>`
+            a.status === 'scheduled'
+              ? `<div class="record-card__appt-actions" style="margin-top:8px">
+                  <button type="button" class="btn btn-secondary" style="padding:10px" data-edit="${a.id}">Редактировать</button>
+                  <button type="button" class="btn btn-primary" style="padding:10px" data-done="${a.id}">Завершить</button>
+                  ${
+                    appointmentCanReschedule(a)
+                      ? `<div class="record-card__appt-actions-row">
+                          <button type="button" class="btn btn-secondary" data-reschedule-appt="${a.id}">Перенести</button>
+                          <button type="button" class="btn btn-secondary" data-cancel-appt="${a.id}">Отменить</button>
+                        </div>`
+                      : ''
+                  }
+                </div>`
+              : ''
           }
         </article>`;
         })
@@ -1172,6 +1290,48 @@ export function attachRecords(shell, db, go, refresh) {
       go(`edit-${id}?from=records`);
     });
   });
+  root.querySelectorAll('[data-done]').forEach((b) => {
+    b.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const id = b.getAttribute('data-done');
+      if (!id) return;
+      go(`complete-${id}?from=records`);
+    });
+  });
+  root.querySelectorAll('[data-cancel-appt]').forEach((b) => {
+    b.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const id = Number(b.getAttribute('data-cancel-appt'));
+      if (!id) return;
+      void (async () => {
+        const row = await db.getAppointment(id);
+        if (!row || !appointmentCanCancel(row)) {
+          toast('Эту запись уже нельзя отменить.');
+          return;
+        }
+        const reason = await chooseCancelReasonDialog();
+        if (!reason) return;
+        if (reason === 'delete') {
+          const ok = await confirmDialog('Удалить запись? Это действие нельзя отменить.', {
+            leftLabel: 'Отмена',
+            rightLabel: 'Удалить',
+            focusLeft: true,
+          });
+          if (!ok) return;
+          await db.deleteAppointment(id);
+          await refresh();
+          go('records');
+          return;
+        }
+        row.status = reason === 'no_show' ? 'no_show' : 'cancelled';
+        row.cancelReason = reason;
+        row.cancelledAt = new Date().toISOString();
+        await db.putAppointment(row);
+        await refresh();
+        go('records');
+      })();
+    });
+  });
   attachAppointmentDeleteButtons(root, db, go, refresh);
   attachRescheduleButtons(root, db, go, refresh);
 }
@@ -1189,7 +1349,7 @@ async function renderClients(db, go) {
               : 0;
           const star = visits > 1 ? '<span class="badge">⭐ Повторный</span>' : '';
           const phoneList = String(c.phone ?? '').trim();
-          const phoneShown = phoneList ? esc(phoneList) : '—';
+          const phoneShown = phoneList ? esc(F.formatClientPhonePretty(phoneList)) : '—';
           return `<article class="card client-card" data-client="${c.id}">
           <div style="display:flex;justify-content:space-between;align-items:center">
             <div style="font-weight:700">${esc(c.name || 'Без имени')}</div>
@@ -1244,7 +1404,7 @@ async function renderClientDetail(db, id, go) {
     .slice(0, 12)
     .map((a) => {
       return `<div class="card compact">
-      <div style="font-weight:600">${esc(F.formatDateISO(a.date))} · ${esc(a.serviceNameSnapshot || '')}</div>
+      <div style="font-weight:600">${esc(F.formatDateRu(a.date))} · ${esc(a.serviceNameSnapshot || '')}</div>
       <div class="status-line">${F.money(a.receivedRub || a.priceRub || 0)} · прибыль ${F.money(a.profitRub || 0)}</div>
     </div>`;
     })
@@ -1261,11 +1421,13 @@ async function renderClientDetail(db, id, go) {
       </header>
       <button type="button" class="btn btn-secondary" style="width:100%;margin-bottom:14px" id="cd-edit-open">Редактировать</button>
       <div style="text-align:right;margin:-8px 0 14px">
-        <button type="button" class="btn btn-ghost" id="cd-delete-client" style="padding:6px 10px;width:auto;font-size:0.86rem;color:var(--muted)" title="Удалить клиента" aria-label="Удалить клиента">🗑 Удалить клиента</button>
+        <button type="button" class="appt-delete-btn" id="cd-delete-client" title="Удалить клиента" aria-label="Удалить клиента"><span class="appt-delete-btn__ico" aria-hidden="true">🗑</span></button>
       </div>
       <div class="card">
         <div class="card-title">Контакты</div>
-        <p id="cd-ro-phone" style="margin:0 0 6px">${esc(client.phone || '—')}</p>
+        <p id="cd-ro-phone" data-raw-phone="${esc(client.phone || '')}" style="margin:0 0 6px">${esc(
+          F.formatClientPhonePretty(client.phone) || '—'
+        )}</p>
         <p style="margin:0;color:var(--muted);font-size:0.9rem">${esc(client.telegram || '')}</p>
       </div>
       <div class="card">
@@ -1287,7 +1449,10 @@ async function renderClientDetail(db, id, go) {
       <label class="label" for="cd-ed-name">Имя</label>
       <input class="field" id="cd-ed-name" type="text" autocomplete="name" value="${esc(client.name)}" />
       <label class="label" for="cd-ed-phone">Телефон</label>
-      <input class="field" id="cd-ed-phone" type="tel" inputmode="tel" autocomplete="tel" value="${esc(client.phone || '')}" />
+      <input class="field" id="cd-ed-phone" type="tel" inputmode="tel" autocomplete="tel" placeholder="Например: 89774720425" value="${esc(
+        client.phone || ''
+      )}" />
+      <p class="muted" style="font-size:0.82rem;margin:-6px 0 10px;line-height:1.4">Введите 11 цифр. Можно писать без пробелов: 89774720425</p>
       <label class="label" for="cd-ed-notes">Заметка</label>
       <textarea class="field" id="cd-ed-notes" rows="4" placeholder="Заметка">${esc(client.notes || '')}</textarea>
       <div style="display:flex;flex-direction:column;gap:10px;margin-top:16px">
@@ -1315,8 +1480,8 @@ export function attachClientDetail(shell, db, go, id) {
     const roNotes = root.querySelector('#cd-ro-notes');
     if (nameEl && roName) nameEl.value = roName.textContent || '';
     if (phoneEl && roPhone) {
-      const t = String(roPhone.textContent ?? '').trim();
-      phoneEl.value = t === '—' ? '' : t;
+      const raw = String(roPhone.getAttribute('data-raw-phone') ?? '').trim();
+      phoneEl.value = raw;
     }
     if (notesEl && roNotes) {
       const t = roNotes.textContent || '';
@@ -1385,16 +1550,13 @@ export function attachClientDetail(shell, db, go, id) {
       toast('Введите имя клиента.');
       return;
     }
-    if (!phone) {
-      toast('Введите номер телефона клиента.');
-      return;
-    }
-    if (!F.clientPhoneHasEnoughDigits(phone)) {
-      toast('Введите корректный номер телефона.');
+    const ph = F.validateClientPhoneRu(phone);
+    if (!ph.ok) {
+      toast('Проверьте номер телефона. Для России нужно 11 цифр: например, 8 999 123-45-67.');
       return;
     }
     try {
-      await db.updateClient(cid, { name, phone, notes });
+      await db.updateClient(cid, { name, phone: ph.normalized, notes });
       toast('Сохранено');
       go(`client-${cid}`);
     } catch (err) {
@@ -1432,7 +1594,7 @@ async function renderMaterials(db, go) {
               }
               ${m.comment ? `<div class="status-line">Комментарий: ${esc(m.comment)}</div>` : ''}
             </div>
-            <button type="button" class="icon-btn" data-del-mat="${m.id}" title="Удалить" aria-label="Удалить">🗑️</button>
+            <button type="button" class="appt-delete-btn" data-del-mat="${m.id}" title="Удалить" aria-label="Удалить"><span class="appt-delete-btn__ico" aria-hidden="true">🗑</span></button>
           </div>
         </article>`;
         })
@@ -1448,9 +1610,8 @@ async function renderMaterials(db, go) {
   <div class="content">
     <div class="row" style="margin-bottom:12px">
       <button type="button" class="btn btn-secondary" id="btn-purchase">＋ Пополнить склад</button>
-      <button type="button" class="btn btn-secondary" id="btn-add-mat">＋ Создать материал</button>
     </div>
-    <p class="muted" style="margin:-4px 0 14px;font-size:0.88rem;line-height:1.45">Пополнить склад — если вы купили материал и хотите добавить остаток.<br>Создать материал — если нужно заранее добавить позицию без закупки.</p>
+    <p class="muted" style="margin:-4px 0 14px;font-size:0.88rem;line-height:1.45">Добавляйте материал на склад после покупки. Если позиции ещё нет в справочнике, создайте её прямо при пополнении.</p>
     <button type="button" class="btn btn-secondary" id="btn-cleanup-test-mat">Очистить тестовые материалы</button>
     <div class="list-gap">${html}</div>
   </div>`;
@@ -1459,8 +1620,8 @@ async function renderMaterials(db, go) {
 export function attachMaterials(shell, db, go) {
   const root = shell.querySelector('#app-root') || shell;
   root.querySelector('#btn-purchase')?.addEventListener('click', () => go('purchase'));
-  root.querySelector('#btn-add-mat')?.addEventListener('click', () => go('add-material'));
-  root.querySelector('#btn-add-mat-empty')?.addEventListener('click', () => go('add-material'));
+  // Кнопку «Создать материал» скрыли — новый материал создаётся внутри «Пополнить склад».
+  root.querySelector('#btn-add-mat-empty')?.addEventListener('click', () => go('purchase'));
   root.querySelectorAll('[data-open-material]').forEach((card) => {
     card.addEventListener('click', (e) => {
       if (e.target.closest('[data-del-mat]')) return;
@@ -1558,6 +1719,7 @@ async function renderPurchase(db, go) {
   const params = new URLSearchParams(location.hash.split('?')[1] || '');
   const preselectedMaterialId = params.get('materialId');
   const hasMaterials = materials.length > 0;
+  // (matById зарезервировано под будущие подсказки по выбранному материалу)
   const purchaseFieldLabels = (unitCode) => {
     if (unitCode === 'pcs') {
       return {
@@ -1593,9 +1755,10 @@ async function renderPurchase(db, go) {
         .map((m) => {
           const pSize = packSizeDefaultAttr(m);
           const pPrice = packPriceDefaultAttr(m);
+          const stk = Math.max(0, Number(m.stock) || 0);
           return `<option value="${m.id}" data-price="${
             Number(m.pricePerUnit) || 0
-          }" data-unit="${esc(m.unit || 'g')}" data-pack-price="${pPrice}" data-pack-size="${pSize}" ${
+          }" data-unit="${esc(m.unit || 'g')}" data-pack-price="${pPrice}" data-pack-size="${pSize}" data-stock="${stk}" ${
             preselectedMaterialId && String(m.id) === String(preselectedMaterialId) ? 'selected' : ''
           }>${esc(m.name)}</option>`;
         })
@@ -1635,22 +1798,28 @@ async function renderPurchase(db, go) {
         ? `<div class="card compact pm-mode-card" id="pm-mode-wrap">
       <div class="card-title" style="margin-bottom:2px">Способ добавления материала</div>
       <div class="pm-mode-tabs" role="tablist" aria-label="Способ добавления материала">
-        <button type="button" role="tab" class="pm-mode-tab is-active" id="pm-tab-existing" aria-selected="true">Выбрать из списка</button>
+        <div class="pm-pick-tab">
+          <button type="button" role="tab" class="pm-mode-tab is-active" id="pm-tab-existing" aria-selected="true">Выбрать из списка ▾</button>
+          <select class="field pm-pick-tab__native" id="pm-m" aria-label="Материал">
+            ${
+              preselectedMaterialId
+                ? ''
+                : '<option value="" selected disabled>Выберите материал</option>'
+            }
+            ${opts}
+          </select>
+        </div>
         <button type="button" role="tab" class="pm-mode-tab" id="pm-tab-new" aria-selected="false">+ Новый материал</button>
       </div>
     </div>`
         : ''
     }
     <div id="pm-existing-block" ${!hasMaterials ? 'hidden' : ''}>
-      <label class="label" for="pm-m">Материал</label>
-      <select class="field" id="pm-m">
-        ${
-          preselectedMaterialId
-            ? ''
-            : '<option value="" selected disabled>Выберите материал</option>'
-        }
-        ${opts}
-      </select>
+      <div class="card compact" id="pm-m-summary" style="display:none;margin-top:0">
+        <div class="card-title" style="margin-bottom:6px">Выбранный материал</div>
+        <div class="status-line" id="pm-m-summary-name">—</div>
+        <div class="status-line" id="pm-m-summary-meta">—</div>
+      </div>
     </div>
     <div id="pm-new-block" ${hasMaterials ? 'hidden' : ''}>
       <label class="label" for="pm-new-type">Тип материала</label>
@@ -1698,7 +1867,12 @@ async function renderPurchase(db, go) {
     <label class="label" for="pm-s">Поставщик</label>
     <input class="field" id="pm-s" placeholder="Например: WB" />
     <label class="label" for="pm-d">Дата</label>
-    <input class="field" id="pm-d" type="date" value="${F.todayISO()}" />
+    <div class="date-overlay" id="pm-date-wrap">
+      <input class="field date-overlay__ui" id="pm-d-ui" type="text" readonly value="${esc(
+        F.formatDateRu(F.todayISO())
+      )}" />
+      <input class="field date-overlay__native" id="pm-d" type="date" value="${F.todayISO()}" aria-label="Дата" />
+    </div>
     <label class="label" for="pm-n">Комментарий</label>
     <textarea class="field" id="pm-n" placeholder="Необязательно"></textarea>
     <button type="button" class="btn btn-primary" id="pm-save" ${packsStartEnabled ? '' : 'disabled'}>Сохранить приход</button>
@@ -1721,6 +1895,10 @@ export function attachPurchase(shell, db, go, refresh) {
   const matSelect = root.querySelector('#pm-m');
   const newUnitEl = root.querySelector('#pm-new-unit');
 
+  const matSummary = root.querySelector('#pm-m-summary');
+  const matSummaryName = root.querySelector('#pm-m-summary-name');
+  const matSummaryMeta = root.querySelector('#pm-m-summary-meta');
+
   const isNewMaterialMode = () => !!(newBlock && !newBlock.hidden);
 
   const unitLine = root.querySelector('#pm-unit-line');
@@ -1738,6 +1916,21 @@ export function attachPurchase(shell, db, go, refresh) {
   const overrideRow = root.querySelector('#pm-override-row');
   const overrideChk = root.querySelector('#pm-pack-override');
   const packPriceLabelEl = root.querySelector('#pm-pack-price-label');
+
+  const pmDateWrap = root.querySelector('#pm-date-wrap');
+  const pmDateEl = root.querySelector('#pm-d');
+  const pmDateUi = root.querySelector('#pm-d-ui');
+
+  pmDateWrap?.addEventListener('click', () => {
+    try {
+      pmDateEl?.showPicker?.();
+    } catch {}
+    pmDateEl?.focus?.();
+  });
+  pmDateEl?.addEventListener('change', () => {
+    const v = String(pmDateEl?.value ?? '').trim();
+    if (pmDateUi) pmDateUi.value = F.formatDateRu(v);
+  });
 
   const purchaseFieldLabels = (unitCode) => {
     if (unitCode === 'pcs') {
@@ -1856,6 +2049,7 @@ export function attachPurchase(shell, db, go, refresh) {
     const opt = matSelect?.selectedOptions?.[0];
     if (!opt || !opt.value) {
       setMaterialChosenState(false);
+      if (matSummary) matSummary.style.display = 'none';
       return;
     }
     setMaterialChosenState(true);
@@ -1875,6 +2069,25 @@ export function attachPurchase(shell, db, go, refresh) {
     syncPackFieldsFromMaterialOption();
     applyPurchaseOverrideUI();
     recalcPurchaseTotals();
+
+    // Показать данные выбранного материала (в т.ч. если остаток 0 — это нормально для пополнения)
+    try {
+      // Получаем расширенные поля из option/data-* и из самого названия option
+      const name = opt.textContent || 'Материал';
+      const stk = Math.max(0, Number(opt.getAttribute('data-stock')) || 0);
+      const packSize = Math.max(0, Number(opt.getAttribute('data-pack-size')) || 0);
+      const packPrice = Math.max(0, Number(opt.getAttribute('data-pack-price')) || 0);
+      const unitLabel = unit === 'pcs' ? 'шт' : 'г';
+      const metaLine = [
+        `Остаток: ${stk} ${unitLabel}`,
+        `Ед.: ${unitLabel}`,
+        `Упаковка: ${packSize > 0 ? packSize : '—'} ${unitLabel}`,
+        `Цена уп.: ${packPrice > 0 ? F.money(packPrice) : '—'}`,
+      ].join(' · ');
+      if (matSummaryName) matSummaryName.textContent = name;
+      if (matSummaryMeta) matSummaryMeta.textContent = metaLine;
+      if (matSummary) matSummary.style.display = '';
+    } catch {}
   };
 
   matSelect?.addEventListener('change', syncMaterialMeta);
@@ -1909,6 +2122,7 @@ export function attachPurchase(shell, db, go, refresh) {
     if (mode === 'new') {
       existingBlock.hidden = true;
       newBlock.hidden = false;
+      if (matSelect) matSelect.disabled = true;
       if (overrideChk) overrideChk.checked = false;
       syncNewMaterialLabelsFromUnit();
       applyPurchaseOverrideUI();
@@ -1918,12 +2132,15 @@ export function attachPurchase(shell, db, go, refresh) {
     } else {
       newBlock.hidden = true;
       existingBlock.hidden = false;
+      if (matSelect) matSelect.disabled = false;
       syncMaterialMeta();
     }
     updateModeTabsUI();
   }
 
-  tabExisting?.addEventListener('click', () => setPurchaseMode('existing'));
+  tabExisting?.addEventListener('click', () => {
+    setPurchaseMode('existing');
+  });
   tabNew?.addEventListener('click', () => setPurchaseMode('new'));
 
   if (!hasMaterials) {
@@ -1951,7 +2168,7 @@ export function attachPurchase(shell, db, go, refresh) {
     } else {
       const midRaw = root.querySelector('#pm-m')?.value;
       if (!midRaw) {
-        toast('Выберите материал.');
+        toast('Выберите материал для пополнения.');
         return;
       }
     }
@@ -2263,14 +2480,14 @@ async function renderServices(db) {
   );
   const cards = services
     .map((s) => {
-      return `<div class="card sv-price-card">
+      return `<div class="card sv-price-card" data-sv-open="${s.id}">
         <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px">
           <div style="flex:1;min-width:0">
             <div style="font-weight:700">${esc(s.name)}</div>
             <div class="status-line">${F.money(s.basePrice)} · ${F.minutesToLabel(s.plannedMinutes)}</div>
             ${s.note ? `<p class="status-line" style="margin-top:6px">${esc(s.note)}</p>` : ''}
           </div>
-          <button type="button" class="icon-btn" aria-label="Удалить из прайса" data-sv-del="${s.id}">🗑️</button>
+          <button type="button" class="appt-delete-btn" aria-label="Удалить из прайса" data-sv-del="${s.id}"><span class="appt-delete-btn__ico" aria-hidden="true">🗑</span></button>
         </div>
       </div>`;
     })
@@ -2297,6 +2514,14 @@ export function attachServices(shell, db, go, refresh) {
   const root = shell.querySelector('#app-root') || shell;
   root.querySelector('#sv-add')?.addEventListener('click', () => go('add-service'));
   root.querySelector('#sv-empty-add')?.addEventListener('click', () => go('add-service'));
+  root.querySelectorAll('[data-sv-open]').forEach((card) => {
+    card.addEventListener('click', (e) => {
+      if (e.target.closest('button')) return;
+      const id = card.getAttribute('data-sv-open');
+      if (!id) return;
+      go(`service-${id}`);
+    });
+  });
   root.querySelectorAll('[data-sv-del]').forEach((btn) => {
     btn.addEventListener('click', async (e) => {
       e.preventDefault();
@@ -2364,6 +2589,50 @@ async function renderAddService() {
   </div>`;
 }
 
+async function renderServiceDetail(db, id, go) {
+  const sid = Number(id);
+  const svc = await db.getService(sid);
+  if (!svc) {
+    return `<div class="content"><p class="empty-hint">Услуга не найдена</p><button class="btn btn-secondary" type="button" data-back>Назад</button></div>`;
+  }
+  const planned = Math.max(0, Number(svc.plannedMinutes) || 0);
+  const ph = Math.floor(planned / 60);
+  const pm = planned % 60;
+  const diff = Math.min(5, Math.max(1, Number(svc.defaultDifficulty) || 1));
+
+  return `<div class="content">
+    <div class="back-row"><a href="#services" data-back>← Назад</a></div>
+    <header class="page-header" style="padding-left:0;padding-right:0">
+      <div>
+        <h1 style="margin:0">${esc(String(svc.name || 'Услуга').trim() || 'Услуга')}</h1>
+        <p class="sub">Редактирование услуги</p>
+      </div>
+    </header>
+
+    <label class="label" for="s-ed-name">Название услуги</label>
+    <input class="field" id="s-ed-name" value="${esc(String(svc.name || '').trim())}" />
+
+    <label class="label" for="s-ed-price">Цена, ₽</label>
+    <input class="field" id="s-ed-price" type="number" min="0" step="100" value="${esc(
+      String(Number(svc.basePrice) || 0)
+    )}" />
+
+    <p class="card-title" style="margin-top:14px">Плановое время</p>
+    <div class="row">
+      <div style="flex:1"><label class="label" for="s-ed-ph">Часы</label><input class="field" id="s-ed-ph" type="number" min="0" value="${ph}" /></div>
+      <div style="flex:1"><label class="label" for="s-ed-pm">Минуты</label><input class="field" id="s-ed-pm" type="number" min="0" step="5" value="${pm}" /></div>
+    </div>
+
+    <label class="label" for="s-ed-diff">Сложность (1–5)</label>
+    <input class="field" id="s-ed-diff" type="number" min="1" max="5" step="1" value="${diff}" />
+
+    <div style="display:flex;flex-direction:column;gap:10px;margin-top:16px">
+      <button type="button" class="btn btn-primary" id="s-ed-save">Сохранить</button>
+      <button type="button" class="btn btn-secondary" id="s-ed-cancel">Отмена</button>
+    </div>
+  </div>`;
+}
+
 export function attachAddService(shell, db, go, refresh) {
   const root = shell.querySelector('#app-root') || shell;
   const qs = location.hash.includes('?') ? location.hash.split('?')[1] : '';
@@ -2397,6 +2666,48 @@ export function attachAddService(shell, db, go, refresh) {
     toast('Услуга сохранена');
     await refresh();
     go(ret === 'new' ? 'new' : 'services');
+  });
+}
+
+export function attachServiceDetail(shell, db, go, id, refresh) {
+  const root = shell.querySelector('#app-root') || shell;
+  const sid = Number(id);
+  root.querySelector('[data-back]')?.addEventListener('click', (e) => {
+    e.preventDefault();
+    go('services');
+  });
+  root.querySelector('#s-ed-cancel')?.addEventListener('click', () => go('services'));
+  root.querySelector('#s-ed-save')?.addEventListener('click', async () => {
+    const name = String(root.querySelector('#s-ed-name')?.value ?? '').trim();
+    const price = Math.max(0, Number(root.querySelector('#s-ed-price')?.value) || 0);
+    const ph = Math.max(0, Number(root.querySelector('#s-ed-ph')?.value) || 0);
+    const pm = Math.max(0, Number(root.querySelector('#s-ed-pm')?.value) || 0);
+    const plannedMinutes = Math.max(0, Math.round(ph * 60 + pm));
+    const diff = Math.min(5, Math.max(1, Math.round(Number(root.querySelector('#s-ed-diff')?.value) || 1)));
+    if (!name) {
+      toast('Введите название услуги');
+      return;
+    }
+    if (plannedMinutes <= 0) {
+      toast('Укажите длительность больше нуля');
+      return;
+    }
+    const fresh = await db.getService(sid);
+    if (!fresh) {
+      toast('Услуга не найдена');
+      go('services');
+      return;
+    }
+    await db.putService({
+      ...fresh,
+      name,
+      basePrice: price,
+      plannedMinutes,
+      defaultDifficulty: diff,
+    });
+    toast('Сохранено');
+    await refresh();
+    go('services');
   });
 }
 
@@ -2780,7 +3091,7 @@ async function renderWizard(root, db, go, opts = {}) {
 
       const pickedPhoneLine =
         picked && String(picked.phone ?? '').trim()
-          ? `<div class="status-line">${esc(picked.phone)}</div>`
+          ? `<div class="status-line">${esc(F.formatClientPhonePretty(picked.phone))}</div>`
           : '';
       const pickedBanner = picked
         ? `<div class="card compact wizard-picked-client" style="margin-bottom:12px;border-color:var(--accent);background:var(--accent-soft)">
@@ -2801,7 +3112,8 @@ async function renderWizard(root, db, go, opts = {}) {
         <hr class="soft" />
         <p class="card-title">Новый клиент</p>
         <input class="field" id="w-new-name" placeholder="Имя" />
-        <input class="field" id="w-new-phone" placeholder="Телефон" inputmode="tel" />
+        <input class="field" id="w-new-phone" placeholder="Например: 89774720425" inputmode="tel" />
+        <p class="muted" style="font-size:0.82rem;margin:-6px 0 10px;line-height:1.4">Введите 11 цифр. Можно писать без пробелов: 89774720425</p>
         <textarea class="field" id="w-new-notes" placeholder="Заметка"></textarea>`;
 
       root.innerHTML = `<div class="content">
@@ -2834,7 +3146,7 @@ async function renderWizard(root, db, go, opts = {}) {
             const sel = Number(c.id) === Number(w.clientId) ? ' is-selected' : '';
             return `<button type="button" class="card client-card${sel}" style="width:100%;text-align:left;cursor:pointer" data-pick-client="${c.id}">
           <div style="font-weight:700">${esc(c.name)}</div>
-          <div class="status-line">${esc(c.phone || '')}</div>
+          <div class="status-line">${esc(F.formatClientPhonePretty(c.phone || ''))}</div>
         </button>`;
           })
           .join('')}</div>`;
@@ -2888,7 +3200,7 @@ async function renderWizard(root, db, go, opts = {}) {
             return;
           }
           if (!F.clientPhoneHasEnoughDigits(pTrim)) {
-            toast('Введите корректный номер телефона.');
+            toast('Проверьте номер телефона. Для России нужно 11 цифр: например, 8 999 123-45-67.');
             return;
           }
           w.clientId = pickId;
@@ -2919,7 +3231,7 @@ async function renderWizard(root, db, go, opts = {}) {
             return;
           }
           if (!F.clientPhoneHasEnoughDigits(catPhone)) {
-            toast('Введите корректный номер телефона.');
+            toast('Проверьте номер телефона. Для России нужно 11 цифр: например, 8 999 123-45-67.');
             return;
           }
           clients = liveClients;
@@ -2943,25 +3255,18 @@ async function renderWizard(root, db, go, opts = {}) {
         }
         const name = String(root.querySelector('#w-new-name')?.value ?? '').trim();
         const phone = String(root.querySelector('#w-new-phone')?.value ?? '').trim();
-        if (!name && !phone) {
-          toast('Введите имя и номер телефона клиента.');
-          return;
-        }
         if (!name) {
           toast('Введите имя клиента.');
           return;
         }
-        if (!phone) {
-          toast('Введите номер телефона клиента.');
-          return;
-        }
-        if (!F.clientPhoneHasEnoughDigits(phone)) {
-          toast('Введите корректный номер телефона.');
+        const ph = F.validateClientPhoneRu(phone);
+        if (!ph.ok) {
+          toast('Проверьте номер телефона. Для России нужно 11 цифр: например, 8 999 123-45-67.');
           return;
         }
         const id = await db.addClient({
           name,
-          phone,
+          phone: ph.normalized,
           notes: root.querySelector('#w-new-notes')?.value?.trim(),
         });
         w.clientId = id;
@@ -3111,7 +3416,7 @@ async function renderWizard(root, db, go, opts = {}) {
                 <div style="font-weight:600">Материал #${esc(String(mid))}</div>
                 <p class="empty-hint" style="margin:6px 0 0;padding:0;text-align:left;font-size:0.88rem">Нет в справочнике — уберите из плана</p>
               </div>
-              <button type="button" class="icon-btn" aria-label="Убрать из плана" data-remove-plan-mat="${mid}">🗑️</button>
+              <button type="button" class="appt-delete-btn" aria-label="Убрать из плана" data-remove-plan-mat="${mid}"><span class="appt-delete-btn__ico" aria-hidden="true">🗑</span></button>
             </div>
           </div>`;
           }
@@ -3119,27 +3424,38 @@ async function renderWizard(root, db, go, opts = {}) {
           const u = m.unit || m.baseUnit || 'g';
           const planLabel = u === 'pcs' ? 'План, шт' : 'План, г';
           const safeVal = esc(qtyVal);
+          const stockNum = Math.max(0, Number(m.stock) || 0);
+          const warnZero =
+            stockNum <= 0
+              ? `<p class="muted" style="margin:6px 0 0;line-height:1.35;color:var(--warn)">Остаток материала на складе 0 ${esc(
+                  unitCodeShort(u)
+                )}. Проверьте план расхода.</p>`
+              : '';
           return `<div class="card compact" data-plan-row="${mid}">
           <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px">
             <div style="flex:1;min-width:0">
               <div style="font-weight:600">${esc(m.name)}</div>
               <div class="status-line">Остаток: ${esc(String(m.stock ?? 0))} ${esc(unitCodeShort(u))} · ${F.money(m.pricePerUnit)} за ${esc(unitCodePriceLabel(u))}</div>
+              ${warnZero}
             </div>
-            <button type="button" class="icon-btn" aria-label="Убрать из плана" data-remove-plan-mat="${mid}">🗑️</button>
+            <button type="button" class="appt-delete-btn" aria-label="Убрать из плана" data-remove-plan-mat="${mid}"><span class="appt-delete-btn__ico" aria-hidden="true">🗑</span></button>
           </div>
           <label class="label" for="wm-plan-${mid}">${esc(planLabel)}</label>
-          <input class="field" id="wm-plan-${mid}" type="number" min="0" step="1" value="${safeVal}" placeholder="0" />
+          <input class="field" id="wm-plan-${mid}" type="number" min="0" step="1" max="${esc(
+            String(stockNum)
+          )}" value="${safeVal}" placeholder="0" />
         </div>`;
         })
         .join('');
 
       const pickCandidates = [...materials]
-        .filter((m) => !usedIds.has(Number(m.id)))
+        .filter((m) => {
+          const id = Number(m.id);
+          if (!id || usedIds.has(id)) return false;
+          if (m.isActive === false) return false;
+          return (Number(m.stock) || 0) > 0;
+        })
         .sort((a, b) => {
-          const sa = Number(a.stock) || 0;
-          const sb = Number(b.stock) || 0;
-          if (sb > 0 && sa <= 0) return 1;
-          if (sa > 0 && sb <= 0) return -1;
           return String(a.name || '').localeCompare(String(b.name || ''), 'ru');
         });
 
@@ -3150,8 +3466,7 @@ async function renderWizard(root, db, go, opts = {}) {
               .map((m) => {
                 const u = m.unit || m.baseUnit || 'g';
                 const stk = Number(m.stock) || 0;
-                const zero = stk <= 0;
-                return `<button type="button" class="mat-pick-item${zero ? ' mat-pick-item--zero' : ''}" data-w-pick-mat="${m.id}">
+                return `<button type="button" class="mat-pick-item" data-w-pick-mat="${m.id}">
                 <div style="font-weight:600">${esc(m.name)}</div>
                 <div class="muted-line">Остаток: ${esc(String(stk))} ${esc(unitCodeShort(u))} · ${F.money(m.pricePerUnit)} за ${esc(unitCodePriceLabel(u))}</div>
               </button>`;
@@ -3163,7 +3478,7 @@ async function renderWizard(root, db, go, opts = {}) {
         <div class="step-bar">Шаг 3 из 4 · Материалы</div>
         <h1 style="margin-top:0;font-size:1.35rem">План по материалам</h1>
         ${wizardServiceSummaryCard(w, true)}
-        <p class="muted" style="line-height:1.45;margin-bottom:12px">Сюда попадают только те материалы, которые вы добавите кнопкой ниже. Справочник целиком не показываем. Со склада <strong>ничего не списывается</strong> при сохранении записи — списание только при завершении визита по факту.</p>
+        <p class="muted" style="line-height:1.45;margin-bottom:12px">Здесь указывается плановый расход. Фактическое списание произойдёт при завершении записи.</p>
         <button type="button" class="btn btn-secondary" style="width:100%" id="w-open-mat-pick">+ Добавить материал</button>
         <p class="muted" style="font-size:0.82rem;margin:10px 0 0">Нужна новая позиция? <button type="button" class="btn btn-ghost" style="display:inline;padding:4px 8px;width:auto;font-size:inherit;vertical-align:baseline" id="w-go-add-material-catalog">Добавить на склад</button></p>
         <div id="w-plan-cards" class="list-gap" style="margin-top:16px">${planCardsHtml}</div>
@@ -3213,6 +3528,11 @@ async function renderWizard(root, db, go, opts = {}) {
         btn.addEventListener('click', () => {
           const id = Number(btn.getAttribute('data-w-pick-mat'));
           if (!id) return;
+          const mRow = byId[id];
+          if (!mRow || mRow.isActive === false || (Number(mRow.stock) || 0) <= 0) {
+            toast('Этого материала нет на складе. Выберите материал с остатком больше 0.');
+            return;
+          }
           const cur = [...(w.materialsPlan || [])];
           if (cur.some((p) => Number(p.materialId) === id)) return;
           cur.push({ materialId: id, qty: '' });
@@ -3221,6 +3541,24 @@ async function renderWizard(root, db, go, opts = {}) {
           closeMatPick();
           paint();
         });
+      });
+
+      // Ограничение: план не может быть больше остатка на складе
+      root.querySelector('#w-plan-cards')?.addEventListener('input', (ev) => {
+        const el = ev.target;
+        if (!(el instanceof HTMLInputElement)) return;
+        if (!el.id || !el.id.startsWith('wm-plan-')) return;
+        const mid = Number(el.id.slice('wm-plan-'.length));
+        const m = byId[mid];
+        if (!m) return;
+        const max = Math.max(0, Number(m.stock) || 0);
+        const valRaw = String(el.value ?? '').trim();
+        if (!valRaw) return;
+        const v = Math.max(0, Math.round(Number(valRaw) || 0));
+        if (v > max) {
+          toast('Недостаточно материала на складе. Проверьте остаток.');
+          el.value = String(max);
+        }
       });
 
       root.querySelector('#w-plan-cards')?.addEventListener('click', (ev) => {
@@ -3251,6 +3589,12 @@ async function renderWizard(root, db, go, opts = {}) {
           const mid = Number(row.materialId);
           const el = root.querySelector(`#wm-plan-${mid}`);
           const qty = Number(el?.value) || 0;
+          const m = byId[mid];
+          const max = Math.max(0, Number(m?.stock) || 0);
+          if (qty > max) {
+            toast('Недостаточно материала на складе. Проверьте остаток.');
+            return;
+          }
           if (qty > 0) nextPlan.push({ materialId: mid, qty });
         }
         w.materialsPlan = nextPlan;
@@ -3302,8 +3646,14 @@ async function renderWizard(root, db, go, opts = {}) {
         <h1 style="margin-top:0;font-size:1.35rem">${headerTitle}</h1>
         ${wizardServiceSummaryCard(w, true)}
         <label class="label" for="w-date">Дата</label>
-        <p class="muted" style="font-size:0.82rem;margin:-4px 0 6px;line-height:1.4">Введите дату в формате ДД.ММ.ГГГГ</p>
-        <input class="field" id="w-date" type="text" inputmode="numeric" autocomplete="off" placeholder="ДД.ММ.ГГГГ" maxlength="10" spellcheck="false" value="${esc(isoDateToDdMmYyyyField(dateIsoForUi))}" />
+        <div class="date-overlay">
+          <input class="field date-overlay__ui" id="w-date-ui" type="text" readonly value="${esc(
+            F.formatDateRu(dateIsoForUi)
+          )}" />
+          <input class="field date-overlay__native" id="w-date" type="date" autocomplete="off" value="${esc(
+            dateIsoForUi
+          )}" aria-label="Дата" />
+        </div>
         <div class="card compact" style="margin-top:14px">
           <div class="card-title">Занято в этот день</div>
           <div id="w-busy-slots-body">${initialBusyHtml}</div>
@@ -3331,13 +3681,21 @@ async function renderWizard(root, db, go, opts = {}) {
         </div>
       </div>`;
       const wDateEl = root.querySelector('#w-date');
+      const wDateUi = root.querySelector('#w-date-ui');
       const wBusyBody = root.querySelector('#w-busy-slots-body');
+      root.querySelector('.date-overlay')?.addEventListener('click', () => {
+        try {
+          wDateEl?.showPicker?.();
+        } catch {}
+        wDateEl?.focus?.();
+      });
       let lastBusyDateKey = dateStr;
       const reloadWizardBusy = async () => {
         const raw = String(wDateEl?.value ?? '').trim();
-        const parsed = F.parseDateRu(raw);
-        const dk = parsed || lastBusyDateKey;
-        if (parsed) lastBusyDateKey = parsed;
+        const iso = /^\d{4}-\d{2}-\d{2}$/.test(raw) ? raw : F.parseDateRu(raw);
+        const dk = iso || lastBusyDateKey;
+        if (iso) lastBusyDateKey = iso;
+        if (wDateUi) wDateUi.value = F.formatDateRu(dk);
         if (wBusyBody) wBusyBody.innerHTML = await htmlBusyDaySlotsBody(db, dk, excludeId);
       };
       wDateEl?.addEventListener('input', () => {
@@ -3348,12 +3706,12 @@ async function renderWizard(root, db, go, opts = {}) {
       });
       root.querySelector('[data-w-back]')?.addEventListener('click', () => {
         const raw = String(root.querySelector('#w-date')?.value ?? '').trim();
-        const parsed = F.parseDateRu(raw);
-        if (!parsed) {
-          toast('Введите дату в формате ДД.ММ.ГГГГ.');
+        const iso = /^\d{4}-\d{2}-\d{2}$/.test(raw) ? raw : F.parseDateRu(raw);
+        if (!iso) {
+          toast('Выберите дату в календаре.');
           return;
         }
-        w.date = parsed;
+        w.date = iso;
         w.time = F.hourMinuteToHHMM(
           root.querySelector('#w-th').value,
           root.querySelector('#w-tm').value
@@ -3372,9 +3730,9 @@ async function renderWizard(root, db, go, opts = {}) {
       });
       root.querySelector('#w5-save')?.addEventListener('click', async () => {
         const dateRaw = String(root.querySelector('#w-date')?.value ?? '').trim();
-        const dateIso = F.parseDateRu(dateRaw);
+        const dateIso = /^\d{4}-\d{2}-\d{2}$/.test(dateRaw) ? dateRaw : F.parseDateRu(dateRaw);
         if (!dateIso) {
-          toast('Введите дату в формате ДД.ММ.ГГГГ.');
+          toast('Выберите дату в календаре.');
           return;
         }
         const desiredStatus = String(root.querySelector('#w-status')?.value || 'scheduled');
@@ -3413,10 +3771,6 @@ async function renderWizard(root, db, go, opts = {}) {
         }
         const clientNameTrim = String(clientRow.name ?? '').trim();
         const clientPhoneTrim = String(clientRow.phone ?? '').trim();
-        if (!clientNameTrim && !clientPhoneTrim) {
-          toast('Введите имя и номер телефона клиента.');
-          return;
-        }
         if (!clientNameTrim) {
           toast('Введите имя клиента.');
           return;
@@ -3429,8 +3783,8 @@ async function renderWizard(root, db, go, opts = {}) {
           toast(phoneMsg);
           return;
         }
-        if (!F.clientPhoneHasEnoughDigits(clientPhoneTrim)) {
-          toast('Введите корректный номер телефона.');
+        if (!F.validateClientPhoneRu(clientPhoneTrim).ok) {
+          toast('Проверьте номер телефона. Для России нужно 11 цифр: например, 8 999 123-45-67.');
           return;
         }
 
@@ -3506,10 +3860,10 @@ async function renderComplete(root, db, id, go, refresh, meta = {}, backTarget =
     const clientName = esc(String(client?.name || 'Клиент').trim() || 'Клиент');
     const phoneTrim = String(client?.phone ?? '').trim();
     const phoneLine = phoneTrim
-      ? `<p class="status-line">Телефон: ${esc(phoneTrim)}</p>`
+      ? `<p class="status-line">Телефон: ${esc(F.formatClientPhonePretty(phoneTrim))}</p>`
       : `<p class="status-line muted">Телефон не указан</p>`;
     const svc = esc(String(ap.serviceNameSnapshot || '—'));
-    const whenLine = `${esc(F.formatDateISO(ap.date))} · ${esc(F.formatTime(ap.time))}`;
+    const whenLine = `${esc(F.formatDateRu(ap.date))} · ${esc(F.formatTime(ap.time))}`;
     const plannedLabel = esc(F.minutesToLabel(Number(ap.plannedMinutes) || 0));
     const actMin = Number(ap.actualMinutes);
     const actualLabel =
@@ -3558,10 +3912,13 @@ async function renderComplete(root, db, id, go, refresh, meta = {}, backTarget =
   const allMaterials = await db.listMaterials({ includeInactive: true });
   const allById = Object.fromEntries(allMaterials.map((m) => [Number(m.id), m]));
   const plan = ap.materialsPlan || [];
+  const planQtyById = Object.fromEntries(
+    plan.map((p) => [Number(p.materialId), Math.max(0, Number(p.qty) || 0)])
+  );
   const defaultFact =
     ap.materialsFact && ap.materialsFact.length
       ? ap.materialsFact
-      : plan.map((p) => ({ materialId: p.materialId, qty: p.qty }));
+      : plan.map((p) => ({ materialId: p.materialId, qty: Number(p.qty) || 0 }));
   const movementsSnap = await db.listMovements();
   const activeMaterials = allMaterials.filter((m) => m.isActive !== false);
 
@@ -3599,9 +3956,10 @@ async function renderComplete(root, db, id, go, refresh, meta = {}, backTarget =
         }
         const row = fact.find((x) => Number(x.materialId) === mid);
         const q = row != null ? row.qty : '';
-        const valueStr =
-          q === '' || q == null || Number(q) === 0 ? '' : String(q);
+        const valueStr = q === '' || q == null ? '' : String(Math.max(0, Number(q) || 0));
         const uMat = m.unit || m.baseUnit || 'g';
+        const planQty = Math.max(0, Number(planQtyById[mid]) || 0);
+        const planLine = planQtyById[mid] != null ? `План: ${planQty} ${unitCodeShort(uMat)}` : '';
         return `<div class="card compact c-mat-card" data-mat-row="${mid}">
         <div class="c-mat-card__head">
           <div class="c-mat-card__title">${esc(m.name)}</div>
@@ -3611,6 +3969,7 @@ async function renderComplete(root, db, id, go, refresh, meta = {}, backTarget =
               : ''
           }
         </div>
+        ${planLine ? `<div class="status-line" style="margin:2px 0 8px">${esc(planLine)}</div>` : ''}
         <label class="label" for="cf-${mid}">Списать, ${esc(unitCodeShort(uMat))}</label>
         <input class="field" id="cf-${mid}" type="number" min="0" step="1" value="${esc(valueStr)}" placeholder="0" />
       </div>`;
@@ -3724,9 +4083,9 @@ async function renderComplete(root, db, id, go, refresh, meta = {}, backTarget =
       <input class="field" id="c-act-m" type="number" min="0" step="5" value="${am}" />
     </div>
 
-    <h2 style="font-size:1rem;margin:16px 0 8px">Материалы</h2>
-    <p class="status-line" style="margin:-4px 0 10px">По плану записи. Добавьте материал, если использовали сверх плана.</p>
-    <button type="button" class="btn btn-secondary" id="c-add-material" style="margin-bottom:8px">Добавить материал</button>
+    <h2 style="font-size:1rem;margin:16px 0 8px">Фактический расход материалов</h2>
+    <p class="status-line" style="margin:-4px 0 10px">Проверьте плановый расход и укажите, сколько материала ушло по факту.</p>
+    <button type="button" class="btn btn-secondary" id="c-add-material" style="margin-bottom:8px">+ Уточнить расход</button>
     <div id="c-add-mat-picker" style="display:none;margin-bottom:12px" class="list-gap"></div>
     <div id="c-mats">${linesHtml(factLines)}</div>
 
@@ -3750,7 +4109,7 @@ async function renderComplete(root, db, id, go, refresh, meta = {}, backTarget =
     <div class="card compact" id="c-reminder">
       <div class="card-title">Напоминание о расплете</div>
       <label class="label" for="c-wear-days">Срок носки, дней</label>
-      <input class="field" id="c-wear-days" type="number" min="0" step="1" value="${esc(wearDaysInitial)}" placeholder="Например: 45" />
+      <input class="field" id="c-wear-days" type="number" min="0" step="1" value="${esc(wearDaysInitial)}" placeholder="Например: 7" />
       <label class="label" for="c-remind-before">Напомнить за, дней</label>
       <input class="field" id="c-remind-before" type="number" min="0" step="1" value="${esc(remindBeforeInitial)}" placeholder="3" />
       <label class="label" for="c-reminder-comment">Комментарий</label>
@@ -3851,6 +4210,16 @@ async function renderComplete(root, db, id, go, refresh, meta = {}, backTarget =
     factLines = readFactLinesFromDom();
     const actualMinutes = readActualMinutesFromDom();
     const next = factLines.filter((l) => (Number(l.qty) || 0) > 0 && allById[Number(l.materialId)]);
+    for (const l of next) {
+      const m = allById[Number(l.materialId)];
+      if (!m) continue;
+      const want = Math.max(0, Number(l.qty) || 0);
+      const have = Math.max(0, Number(m.stock) || 0);
+      if (want > have) {
+        toast('Недостаточно материала на складе. Проверьте остаток.');
+        return;
+      }
+    }
     const paid = Number(paidEl.value) || 0;
     const materialsCostRub = computeCost(next);
     const laborCostRub = Math.round((actualMinutes / 60) * hourlyRate);
