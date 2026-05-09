@@ -22,6 +22,48 @@ export function formatDateISO(iso) {
   return `${d}.${m}.${y}`;
 }
 
+/** Полные названия месяцев для интерфейса (финансы, подписи). */
+export const MONTH_NAMES_RU_FULL = [
+  'Январь',
+  'Февраль',
+  'Март',
+  'Апрель',
+  'Май',
+  'Июнь',
+  'Июль',
+  'Август',
+  'Сентябрь',
+  'Октябрь',
+  'Ноябрь',
+  'Декабрь',
+];
+
+/** Короткие названия месяцев. */
+export const MONTH_NAMES_RU_SHORT = [
+  'Янв',
+  'Фев',
+  'Мар',
+  'Апр',
+  'Май',
+  'Июн',
+  'Июл',
+  'Авг',
+  'Сен',
+  'Окт',
+  'Ноя',
+  'Дек',
+];
+
+/** Строка YYYY-MM → «Май 2026» (без зависимости от локали браузера). */
+export function formatYearMonthRu(ym) {
+  const s = String(ym ?? '').trim();
+  if (!/^\d{4}-\d{2}$/.test(s)) return '—';
+  const y = Number(s.slice(0, 4));
+  const mo = Number(s.slice(5, 7));
+  if (!Number.isFinite(y) || mo < 1 || mo > 12) return '—';
+  return `${MONTH_NAMES_RU_FULL[mo - 1]} ${y}`;
+}
+
 /**
  * Единое отображение даты для UI: ДД.ММ.ГГГГ.
  * - YYYY-MM-DD → ДД.ММ.ГГГГ

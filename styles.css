@@ -122,6 +122,28 @@ a {
   padding: 12px 14px;
 }
 
+/* Список клиентов: белая карточка + тонкий фирменный акцент */
+.client-card.card {
+  cursor: pointer;
+  border-left: 3px solid var(--accent);
+  transition:
+    box-shadow 0.18s ease,
+    border-color 0.18s ease;
+}
+
+.client-card:hover {
+  box-shadow: 0 4px 18px rgba(139, 92, 246, 0.1);
+  border-color: rgba(139, 92, 246, 0.35);
+}
+
+.client-card:active {
+  box-shadow: 0 2px 10px rgba(139, 92, 246, 0.12);
+}
+
+.client-card .status-line {
+  color: var(--muted);
+}
+
 /* Завершение записи: карточка материала (название + круглая «×», поле ниже) */
 .c-mat-card__head {
   display: flex;
@@ -330,19 +352,38 @@ button.c-mat-remove:active {
   cursor: pointer;
 }
 
-/* Шаг 1 мастера: карточка «Клиент в записи» — кнопки столбиком под контентом */
-.wizard-step1-client-card__actions {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  margin-top: 12px;
+/* Мастер записи: единый вид информационных карточек (шаги 1–4) */
+.wizard-info-card {
+  width: 100%;
+  box-sizing: border-box;
+  margin-bottom: 14px;
+  padding: 12px 14px;
+  border-radius: var(--radius);
+  background: var(--accent-soft);
+  border: 1px solid var(--accent);
+  box-shadow: var(--shadow);
 }
 
-.wizard-step1-client-card__actions .btn {
-  width: 100%;
-  padding: 10px 12px;
-  font-size: 0.9rem;
+.wizard-info-card__title {
+  margin: 0 0 6px;
+  font-size: 0.85rem;
   font-weight: 600;
+  color: var(--accent);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  line-height: 1.3;
+}
+
+/* Вторичные действия под карточкой (клиент, услуга, наценка) — столбик, на всю ширину */
+.wizard-step-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-bottom: 4px;
+}
+
+.wizard-step-actions .btn {
+  width: 100%;
 }
 
 .btn-ghost {
@@ -528,7 +569,12 @@ textarea.field {
   gap: 2px;
   font-size: 0.65rem;
   color: var(--muted);
-  padding-top: 8px;
+  padding: 8px 4px 6px;
+  margin: 4px 2px;
+  border-radius: 12px;
+  transition:
+    background 0.15s ease,
+    color 0.15s ease;
 }
 
 .nav-bottom a .ico {
@@ -539,6 +585,7 @@ textarea.field {
 .nav-bottom a.active {
   color: var(--accent);
   font-weight: 600;
+  background: var(--accent-soft);
 }
 
 .ob-root {
@@ -658,6 +705,76 @@ textarea.field {
   background: var(--accent-soft);
   color: var(--accent);
   font-weight: 600;
+}
+
+/* Финансы: заметный блок периода в фирменном фиолетовом стиле */
+.finance-tabs-wrap {
+  margin: 0 0 18px;
+  padding: 10px;
+  border-radius: var(--radius-sm);
+  background: linear-gradient(180deg, #faf5ff 0%, #ffffff 55%);
+  border: 1px solid #e9d5ff;
+  box-shadow:
+    0 2px 10px rgba(139, 92, 246, 0.07),
+    0 1px 0 rgba(255, 255, 255, 0.8) inset;
+}
+
+.finance-tabs.segmented {
+  margin-bottom: 0;
+  gap: 8px;
+}
+
+.finance-tabs button {
+  position: relative;
+  border-width: 1.5px;
+  padding: 11px 8px;
+  font-size: 0.9rem;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  transition:
+    background 0.18s ease,
+    border-color 0.18s ease,
+    box-shadow 0.18s ease,
+    color 0.18s ease;
+}
+
+.finance-tabs button:not(.active) {
+  color: #5c5470;
+  background: #fefeff;
+  border-color: #ddd6fe;
+}
+
+.finance-tabs button:not(.active):hover {
+  border-color: #c4b5fd;
+  background: #faf8ff;
+  box-shadow: 0 2px 8px rgba(139, 92, 246, 0.12);
+}
+
+.finance-tabs button:not(.active):active {
+  box-shadow: 0 1px 4px rgba(139, 92, 246, 0.1);
+}
+
+.finance-tabs button.active {
+  border: 2px solid var(--accent);
+  background: linear-gradient(145deg, #ede9fe 0%, #e9d5ff 45%, #ddd6fe 100%);
+  color: #5b21b6;
+  font-weight: 700;
+  box-shadow:
+    0 2px 12px rgba(139, 92, 246, 0.24),
+    0 1px 0 rgba(255, 255, 255, 0.65) inset;
+}
+
+.finance-tabs button.active:hover {
+  border-color: #7c3aed;
+  box-shadow:
+    0 3px 14px rgba(124, 58, 237, 0.28),
+    0 1px 0 rgba(255, 255, 255, 0.65) inset;
+}
+
+.finance-tabs button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  z-index: 1;
 }
 
 .muted {

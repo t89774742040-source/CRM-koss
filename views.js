@@ -465,17 +465,6 @@ function isIsoYearMonth(v) {
   return mo >= 1 && mo <= 12;
 }
 
-function formatMonthYearRu(ym) {
-  if (!isIsoYearMonth(ym)) return '—';
-  const [y, mo] = ym.split('-').map(Number);
-  const d = new Date(y, mo - 1, 1);
-  const monthName = new Intl.DateTimeFormat('ru-RU', { month: 'long' }).format(
-    d
-  );
-  const cap = monthName.charAt(0).toUpperCase() + monthName.slice(1);
-  return `${cap} ${y}`;
-}
-
 export async function mount(shell, ctx) {
   const { db, meta, route, go, refresh } = ctx;
   const parsed = parseRoute(route);
@@ -1666,10 +1655,10 @@ async function renderMaterials(db, go) {
   </header>
   <div class="content">
     <div class="row" style="margin-bottom:12px">
-      <button type="button" class="btn btn-secondary" id="btn-purchase">＋ Пополнить склад</button>
+      <button type="button" class="btn btn-primary" id="btn-purchase">＋ Пополнить склад</button>
     </div>
     <p class="muted" style="margin:-4px 0 14px;font-size:0.88rem;line-height:1.45">Добавляйте материал на склад после покупки. Если позиции ещё нет в справочнике, создайте её прямо при пополнении.</p>
-    <button type="button" class="btn btn-secondary" id="btn-cleanup-test-mat">Очистить тестовые материалы</button>
+    <button type="button" class="btn btn-cautious" id="btn-cleanup-test-mat">Очистить тестовые материалы</button>
     <div class="list-gap">${html}</div>
   </div>`;
 }
@@ -2666,29 +2655,79 @@ async function renderFinance(db, go) {
 
   const periodLabel =
     mode === 'today'
-      ? F.formatDateISO(today)
+      ? F.formatDateRu(today)
       : mode === 'month'
-        ? formatMonthYearRu(selectedYm)
-        : `${F.formatDateISO(from)} — ${F.formatDateISO(to)}`;
+        ? F.formatYearMonthRu(selectedYm)
+        : `${F.formatDateRu(from)} — ${F.formatDateRu(to)}`;
 
-  const segHtml = `<div class="segmented" style="margin-top:0">
-    <button type="button" class="${mode === 'today' ? 'active' : ''}" data-fin="today">Сегодня</button>
-    <button type="button" class="${mode === 'month' ? 'active' : ''}" data-fin="month">Месяц</button>
-    <button type="button" class="${mode === 'period' ? 'active' : ''}" data-fin="period">Период</button>
+  const segHtml = `<div class="finance-tabs-wrap">
+    <div class="segmented finance-tabs" style="margin-top:0">
+      <button type="button" class="${mode === 'today' ? 'active' : ''}" data-fin="today">Сегодня</button>
+      <button type="button" class="${mode === 'month' ? 'active' : ''}" data-fin="month">Месяц</button>
+      <button type="button" class="${mode === 'period' ? 'active' : ''}" data-fin="period">Период</button>
+    </div>
   </div>`;
 
   const monthInputs =
     mode === 'month'
-      ? `<label class="label" for="fin-ym">Месяц</label>
-    <input class="field" id="fin-ym" type="month" value="${esc(selectedYm)}" />
-    <button type="button" class="btn btn-secondary" id="fin-apply-month">Показать</button>`
+      ? (() => {
+          const ySel = Number(selectedYm.slice(0, 4));
+          const mSel = Number(selectedYm.slice(5, 7));
+          const yNow = new Date().getFullYear();
+          let yFrom = yNow - 10;
+          let yTo = yNow + 2;
+          if (Number.isFinite(ySel)) {
+            if (ySel < yFrom) yFrom = ySel;
+            if (ySel > yTo) yTo = ySel;
+          }
+          const yearOpts = [];
+          for (let y = yFrom; y <= yTo; y++) {
+            yearOpts.push(
+              `<option value="${y}"${y === ySel ? ' selected' : ''}>${y}</option>`
+            );
+          }
+          const monthOpts = F.MONTH_NAMES_RU_FULL.map((name, i) => {
+            const val = i + 1;
+            const sel = val === mSel ? ' selected' : '';
+            return `<option value="${val}"${sel}>${name}</option>`;
+          }).join('');
+          return `<label class="label" for="fin-month">Месяц</label>
+    <div class="row" style="align-items:flex-end">
+      <div style="flex:1">
+        <select class="field" id="fin-month">${monthOpts}</select>
+      </div>
+      <div style="flex:1">
+        <label class="label" for="fin-year">Год</label>
+        <select class="field" id="fin-year">${yearOpts.join('')}</select>
+      </div>
+    </div>
+    <button type="button" class="btn btn-secondary" id="fin-apply-month">Показать</button>`;
+        })()
       : '';
 
   const periodInputs =
     mode === 'period'
       ? `<div class="row">
-      <div style="flex:1"><label class="label" for="fin-from">С</label><input class="field" id="fin-from" type="text" inputmode="numeric" autocomplete="off" placeholder="ДД.ММ.ГГГГ" maxlength="10" spellcheck="false" value="${esc(F.formatDateISO(from))}" /></div>
-      <div style="flex:1"><label class="label" for="fin-to">По</label><input class="field" id="fin-to" type="text" inputmode="numeric" autocomplete="off" placeholder="ДД.ММ.ГГГГ" maxlength="10" spellcheck="false" value="${esc(F.formatDateISO(to))}" /></div>
+      <div style="flex:1">
+        <label class="label" for="fin-from">С</label>
+        <div class="date-overlay">
+          <input class="field date-overlay__ui" id="fin-from-ui" type="text" readonly value="${esc(
+            F.formatDateRu(from)
+          )}" />
+          <input class="field date-overlay__native" id="fin-from" type="date" value="${esc(
+            from
+          )}" />
+        </div>
+      </div>
+      <div style="flex:1">
+        <label class="label" for="fin-to">По</label>
+        <div class="date-overlay">
+          <input class="field date-overlay__ui" id="fin-to-ui" type="text" readonly value="${esc(
+            F.formatDateRu(to)
+          )}" />
+          <input class="field date-overlay__native" id="fin-to" type="date" value="${esc(to)}" />
+        </div>
+      </div>
     </div>
     <button type="button" class="btn btn-secondary" id="fin-apply">Показать</button>`
       : '';
@@ -2751,9 +2790,9 @@ async function renderServices(db) {
   <div class="content">
     ${
       cards ||
-      `<div class="card" style="text-align:center;padding:20px 12px;margin-bottom:0"><p class="empty-hint" style="margin:0 0 14px;padding:0">Прайс пуст — добавьте услуги вручную</p><button type="button" class="btn btn-primary" id="sv-empty-add">Добавить услугу</button></div>`
+      `<div class="card" style="text-align:center;padding:20px 12px;margin-bottom:0"><p class="empty-hint" style="margin:0 0 14px;padding:0">Прайс пуст — добавьте услуги вручную</p><button type="button" class="btn btn-primary" id="sv-empty-add">＋ Добавить услугу</button></div>`
     }
-    ${cards ? `<button type="button" class="btn btn-secondary" style="width:100%;margin-top:14px" id="sv-add">Добавить услугу</button>` : ''}
+    ${cards ? `<button type="button" class="btn btn-primary" style="width:100%;margin-top:14px" id="sv-add">＋ Добавить услугу</button>` : ''}
     <button type="button" class="btn btn-ghost" style="width:100%;margin-top:12px;font-size:0.92rem" id="sv-purge-demo">Очистить демо-услуги</button>
     <p class="muted" style="margin-top:14px;font-size:0.82rem">Если услуга уже используется в записях, она скрывается из прайса (архив), а не удаляется.</p>
   </div>`;
@@ -2980,11 +3019,18 @@ export function attachFinance(shell, go) {
   root.querySelectorAll('[data-fin]').forEach((b) => {
     b.addEventListener('click', () => navigateMode(b.getAttribute('data-fin')));
   });
+  function readFinanceIsoDate(el) {
+    if (!el) return null;
+    const v = String(el.value ?? '').trim();
+    if (/^\d{4}-\d{2}-\d{2}$/.test(v)) return v;
+    return F.parseDateRu(v);
+  }
+
   root.querySelector('#fin-apply')?.addEventListener('click', () => {
-    const fromIso = F.parseDateRu(root.querySelector('#fin-from')?.value);
-    const toIso = F.parseDateRu(root.querySelector('#fin-to')?.value);
+    const fromIso = readFinanceIsoDate(root.querySelector('#fin-from'));
+    const toIso = readFinanceIsoDate(root.querySelector('#fin-to'));
     if (!fromIso || !toIso) {
-      toast('Укажите даты в формате ДД.ММ.ГГГГ');
+      toast('Выберите обе даты в календаре.');
       return;
     }
     let from = fromIso;
@@ -2997,9 +3043,11 @@ export function attachFinance(shell, go) {
     location.hash = `#finance?m=period&from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`;
   });
   root.querySelector('#fin-apply-month')?.addEventListener('click', () => {
-    const ym = root.querySelector('#fin-ym')?.value;
+    const m = Number(root.querySelector('#fin-month')?.value);
+    const y = Number(root.querySelector('#fin-year')?.value);
+    const ym = `${y}-${String(m).padStart(2, '0')}`;
     if (!isIsoYearMonth(ym)) {
-      toast('Укажите месяц');
+      toast('Укажите месяц и год');
       return;
     }
     location.hash = `#finance?m=month&ym=${encodeURIComponent(ym)}`;
@@ -3008,14 +3056,22 @@ export function attachFinance(shell, go) {
   const subEl = root.querySelector('.page-header .sub');
   const finFromEl = root.querySelector('#fin-from');
   const finToEl = root.querySelector('#fin-to');
-  const normalizeFinDateField = (el) => {
-    const iso = F.parseDateRu(el?.value);
-    if (iso) el.value = F.formatDateISO(iso);
+  const finFromUi = root.querySelector('#fin-from-ui');
+  const finToUi = root.querySelector('#fin-to-ui');
+  const syncFinDateUiFromNative = () => {
+    if (finFromEl && finFromUi) {
+      const v = readFinanceIsoDate(finFromEl);
+      finFromUi.value = v ? F.formatDateRu(v) : '';
+    }
+    if (finToEl && finToUi) {
+      const v = readFinanceIsoDate(finToEl);
+      finToUi.value = v ? F.formatDateRu(v) : '';
+    }
   };
   const syncPeriodSubLabel = () => {
     if (!subEl || !finFromEl || !finToEl) return;
-    const fromIso = F.parseDateRu(finFromEl.value);
-    const toIso = F.parseDateRu(finToEl.value);
+    const fromIso = readFinanceIsoDate(finFromEl);
+    const toIso = readFinanceIsoDate(finToEl);
     if (!fromIso || !toIso) return;
     let from = fromIso;
     let to = toIso;
@@ -3024,12 +3080,35 @@ export function attachFinance(shell, go) {
       from = to;
       to = tmp;
     }
-    subEl.textContent = `${F.formatDateISO(from)} — ${F.formatDateISO(to)}`;
+    subEl.textContent = `${F.formatDateRu(from)} — ${F.formatDateRu(to)}`;
   };
-  finFromEl?.addEventListener('input', syncPeriodSubLabel);
-  finToEl?.addEventListener('input', syncPeriodSubLabel);
-  finFromEl?.addEventListener('blur', () => normalizeFinDateField(finFromEl));
-  finToEl?.addEventListener('blur', () => normalizeFinDateField(finToEl));
+  finFromEl?.addEventListener('input', () => {
+    syncFinDateUiFromNative();
+    syncPeriodSubLabel();
+  });
+  finToEl?.addEventListener('input', () => {
+    syncFinDateUiFromNative();
+    syncPeriodSubLabel();
+  });
+  finFromEl?.addEventListener('change', () => {
+    syncFinDateUiFromNative();
+    syncPeriodSubLabel();
+  });
+  finToEl?.addEventListener('change', () => {
+    syncFinDateUiFromNative();
+    syncPeriodSubLabel();
+  });
+  root.querySelectorAll('.content .date-overlay').forEach((wrap) => {
+    wrap.addEventListener('click', () => {
+      const nat = wrap.querySelector('input[type="date"]');
+      try {
+        nat?.showPicker?.();
+      } catch {
+        /* noop */
+      }
+      nat?.focus?.();
+    });
+  });
 }
 
 async function renderSettings(db, meta, go, refresh) {
@@ -3210,17 +3289,17 @@ async function renderWizard(root, db, go, opts = {}) {
     const price = F.money(wObj.priceRub || 0);
     const timeLabel = esc(F.minutesToLabel(Number(wObj.plannedMinutes) || 0));
     const diff = Math.max(1, Math.min(5, Math.round(Number(wObj.difficulty) || 2)));
-    const editBtn = withEditBtn
-      ? `<button type="button" class="btn btn-secondary" style="width:100%;margin-top:10px" id="w-open-adjust-service">Добавить наценку / время</button>`
-      : '';
-    return `<div class="card compact" style="margin-bottom:14px;background:var(--accent-soft);border-color:var(--accent)">
-      <div class="card-title" style="margin-bottom:6px;color:var(--accent)">Услуга в записи</div>
+    const card = `<div class="wizard-info-card">
+      <div class="wizard-info-card__title">Услуга в записи</div>
       <p class="status-line" style="margin:4px 0">Услуга: ${name}</p>
       <p class="status-line" style="margin:4px 0">Цена: ${price}</p>
       <p class="status-line" style="margin:4px 0">Время: ${timeLabel}</p>
       <p class="status-line" style="margin:4px 0">Сложность: ${esc(String(diff))}</p>
-      ${editBtn}
     </div>`;
+    const actions = withEditBtn
+      ? `<div class="wizard-step-actions"><button type="button" class="btn btn-secondary" id="w-open-adjust-service">Добавить наценку / время</button></div>`
+      : '';
+    return `${card}${actions}`;
   }
 
   let wizardClientSearchTimer = null;
@@ -3508,21 +3587,21 @@ async function renderWizard(root, db, go, opts = {}) {
         ? `<p class="status-line" style="margin:4px 0">${esc(pickedNotesRaw)}</p>`
         : '';
       const pickedBanner = picked
-        ? `<div class="card compact wizard-step1-client-card" style="margin-bottom:14px;background:var(--accent-soft);border-color:var(--accent)">
-          <div class="card-title" style="margin-bottom:6px;color:var(--accent)">Клиент в записи</div>
+        ? `<div class="wizard-info-card">
+          <div class="wizard-info-card__title">Клиент в записи</div>
           <p class="status-line" style="margin:4px 0;font-weight:600;color:var(--text)">${esc(
             picked.name
           )}</p>
           ${pickedPhoneLine}
           ${pickedNotesLine}
-          <div class="wizard-step1-client-card__actions">
-            ${
-              Number(w.editingAppointmentId) > 0
-                ? `<button type="button" class="btn btn-secondary" data-edit-client>Редактировать клиента</button>
-                  <button type="button" class="btn btn-secondary" data-clear-client-pick>Сменить клиента</button>`
-                : `<button type="button" class="btn btn-secondary" data-clear-client-pick>Сменить клиента</button>`
-            }
-          </div>
+        </div>
+        <div class="wizard-step-actions">
+          ${
+            Number(w.editingAppointmentId) > 0
+              ? `<button type="button" class="btn btn-secondary" data-edit-client>Редактировать клиента</button>
+            <button type="button" class="btn btn-secondary" data-clear-client-pick>Сменить клиента</button>`
+              : `<button type="button" class="btn btn-secondary" data-clear-client-pick>Сменить клиента</button>`
+          }
         </div>`
         : '';
 
@@ -3765,8 +3844,10 @@ async function renderWizard(root, db, go, opts = {}) {
           <div class="step-bar">Шаг 2 из 4 · Услуга</div>
           <h1 style="margin-top:0;font-size:1.35rem">Услуга в записи</h1>
           ${wizardServiceSummaryCard(w, false)}
-          <button type="button" class="btn btn-secondary" id="w2-edit-params">Изменить цену / время</button>
-          <button type="button" class="btn btn-secondary" id="w2-replace">Заменить услугу</button>
+          <div class="wizard-step-actions">
+            <button type="button" class="btn btn-secondary" id="w2-edit-params">Изменить цену / время</button>
+            <button type="button" class="btn btn-secondary" id="w2-replace">Заменить услугу</button>
+          </div>
           <div class="wizard-footer">
             <button type="button" class="btn btn-primary" id="w2-next">Далее</button>
           </div>
@@ -4433,6 +4514,45 @@ async function renderComplete(root, db, id, go, refresh, meta = {}, backTarget =
       : plan.map((p) => ({ materialId: p.materialId, qty: Number(p.qty) || 0 }));
   const movementsSnap = await db.listMovements();
   const activeMaterials = allMaterials.filter((m) => m.isActive !== false);
+  const completeClient =
+    ap.clientId != null ? await db.getClient(Number(ap.clientId)) : null;
+
+  const summaryLines = [];
+  const clientNameComplete = String(completeClient?.name ?? '').trim();
+  if (clientNameComplete) {
+    summaryLines.push(
+      `<p class="status-line" style="margin:4px 0">Клиент: ${esc(clientNameComplete)}</p>`
+    );
+  }
+  const svcNameComplete = String(ap.serviceNameSnapshot ?? '').trim();
+  if (svcNameComplete) {
+    summaryLines.push(
+      `<p class="status-line" style="margin:4px 0">Услуга: ${esc(svcNameComplete)}</p>`
+    );
+  }
+  const priceNumComplete = Number(ap.priceRub);
+  if (Number.isFinite(priceNumComplete)) {
+    summaryLines.push(
+      `<p class="status-line" style="margin:4px 0">Цена: ${F.money(priceNumComplete)}</p>`
+    );
+  }
+  if (ap.plannedMinutes != null && String(ap.plannedMinutes).trim() !== '') {
+    const plDisp = Math.max(0, Number(ap.plannedMinutes) || 0);
+    summaryLines.push(
+      `<p class="status-line" style="margin:4px 0">План: ${esc(F.minutesToLabel(plDisp))}</p>`
+    );
+  }
+  const diffComplete = Math.round(Number(ap.difficulty));
+  if (Number.isFinite(diffComplete) && diffComplete >= 1 && diffComplete <= 5) {
+    summaryLines.push(
+      `<p class="status-line" style="margin:4px 0">Сложность: ${esc(String(diffComplete))}</p>`
+    );
+  }
+
+  const completeSummaryCard = `<div class="wizard-info-card">
+    <div class="wizard-info-card__title">Запись к завершению</div>
+    ${summaryLines.join('')}
+  </div>`;
 
   /** Порядок строк: как в плане, затем добавленные в факт. */
   function orderedFactMaterialIds(fact) {
@@ -4557,9 +4677,21 @@ async function renderComplete(root, db, id, go, refresh, meta = {}, backTarget =
     0,
     Number(fixedDb ?? meta?.orderFixedCostRub) || 0
   );
-  const pm = ap.plannedMinutes || 120;
-  const ah = Math.floor(pm / 60);
-  const am = pm % 60;
+  const pmRaw = Math.max(0, Number(ap.plannedMinutes) || 0);
+  const pmSnapped = Math.round(pmRaw / 15) * 15;
+  const ah = Math.floor(pmSnapped / 60);
+  const am = pmSnapped % 60;
+  const hourUpper = Math.min(168, Math.max(24, ah));
+  const completeHourOpts = Array.from({ length: hourUpper + 1 }, (_, i) => {
+    const sel = i === ah ? ' selected' : '';
+    return `<option value="${i}"${sel}>${String(i).padStart(2, '0')}</option>`;
+  }).join('');
+  const completeMinuteOpts = [0, 15, 30, 45]
+    .map((v) => {
+      const sel = v === am ? ' selected' : '';
+      return `<option value="${v}"${sel}>${String(v).padStart(2, '0')}</option>`;
+    })
+    .join('');
   const payDraftKey = `kosoCompletePaid:${ap.id}`;
   function initialPaidFieldValue() {
     const draft = sessionStorage.getItem(payDraftKey);
@@ -4586,16 +4718,22 @@ async function renderComplete(root, db, id, go, refresh, meta = {}, backTarget =
 
   root.innerHTML = `<div class="content">
     <div class="back-row"><a href="#${backTarget}" data-back>← Назад</a></div>
-    <h1 style="font-size:1.25rem;margin-top:0">Завершение записи</h1>
-    <p class="muted">${esc(ap.serviceNameSnapshot || '')}</p>
+    <h1 style="margin-top:0;font-size:1.35rem">Завершение записи</h1>
+    ${completeSummaryCard}
 
-    <label class="label" for="c-act-h">Фактическое время</label>
-    <div class="row">
-      <input class="field" id="c-act-h" type="number" min="0" value="${ah}" />
-      <input class="field" id="c-act-m" type="number" min="0" step="5" value="${am}" />
+    <p class="card-title" style="margin-top:4px;margin-bottom:10px">Фактическое время работы</p>
+    <div class="row" style="align-items:flex-end">
+      <div style="flex:1">
+        <label class="label" for="c-act-h">Часы</label>
+        <select class="field" id="c-act-h">${completeHourOpts}</select>
+      </div>
+      <div style="flex:1">
+        <label class="label" for="c-act-m">Минуты</label>
+        <select class="field" id="c-act-m">${completeMinuteOpts}</select>
+      </div>
     </div>
 
-    <h2 style="font-size:1rem;margin:16px 0 8px">Фактический расход материалов</h2>
+    <p class="card-title" style="margin-top:18px;margin-bottom:8px">Фактический расход материалов</p>
     <p class="status-line" style="margin:-4px 0 10px">Проверьте плановый расход и укажите, сколько материала ушло по факту.</p>
     <button type="button" class="btn btn-secondary" id="c-add-material" style="margin-bottom:8px">+ Уточнить расход</button>
     <div id="c-add-mat-picker" style="display:none;margin-bottom:12px" class="list-gap"></div>
@@ -4637,10 +4775,9 @@ async function renderComplete(root, db, id, go, refresh, meta = {}, backTarget =
   const matsRoot = root.querySelector('#c-mats');
 
   function readActualMinutesFromDom() {
-    return F.parseMinutesFromFields(
-      root.querySelector('#c-act-h').value,
-      root.querySelector('#c-act-m').value
-    );
+    const hEl = root.querySelector('#c-act-h');
+    const mEl = root.querySelector('#c-act-m');
+    return F.parseMinutesFromFields(hEl?.value ?? '0', mEl?.value ?? '0');
   }
 
   function recalc() {
@@ -4671,8 +4808,8 @@ async function renderComplete(root, db, id, go, refresh, meta = {}, backTarget =
   matsRoot?.addEventListener('input', (e) => {
     if (e.target?.tagName === 'INPUT') recalc();
   });
-  root.querySelector('#c-act-h')?.addEventListener('input', recalc);
-  root.querySelector('#c-act-m')?.addEventListener('input', recalc);
+  root.querySelector('#c-act-h')?.addEventListener('change', recalc);
+  root.querySelector('#c-act-m')?.addEventListener('change', recalc);
   matsRoot?.addEventListener('click', (e) => {
     const b = e.target.closest('[data-remove-mat]');
     if (!b) return;
