@@ -274,6 +274,16 @@ function toastOverlapFromConflictRow(conflict) {
   );
 }
 
+function htmlAppointmentNotesBlock(clientNoteRaw, visitNoteRaw) {
+  const clientNote = String(clientNoteRaw || '').trim();
+  const visitNote = String(visitNoteRaw || '').trim();
+  if (!clientNote && !visitNote) return '';
+  return `<div class="appt-notes">
+    ${clientNote ? `<div class="appt-notes__line">${esc(clientNote)}</div>` : ''}
+    ${visitNote ? `<div class="appt-notes__line">${esc(visitNote)}</div>` : ''}
+  </div>`;
+}
+
 /** Полная себестоимость визита; у старых записей только материалы в materialCostRub. */
 function appointmentTotalCogs(a) {
   const t = Number(a?.totalCogsRub);
@@ -317,6 +327,19 @@ function htmlDataBackupCard(footnoteHtml = '') {
         <p class="svc-data-hint svc-data-hint--fine">Важно: используйте именно этот шаблон, чтобы данные загрузились корректно</p>
       </div>
       ${footnoteHtml}`;
+}
+
+function htmlCleanupAfterTestingCard() {
+  return `
+      <div class="card-title">Очистка после тестирования</div>
+      <div class="svc-data-action">
+        <button type="button" class="btn btn-secondary" id="svc-clear-appts">Очистить записи</button>
+        <p class="svc-data-hint">Подходит после тестирования: удаляет все созданные записи, но оставляет клиентов, прайс и материалы.</p>
+      </div>
+      <div class="svc-data-action">
+        <button type="button" class="btn btn-cautious" id="svc-reset-app">Сбросить приложение</button>
+        <p class="svc-data-hint">Полностью очищает все данные и возвращает приложение к пустому состоянию.</p>
+      </div>`;
 }
 
 const MATERIAL_TYPES = [
@@ -726,18 +749,23 @@ async function renderToday(db, meta, go) {
             const svc = esc(String(a.serviceNameSnapshot || '').trim());
             const price = F.money(Number(a.priceRub) || 0);
             const diff = a.difficulty || '—';
+            const visitNote = String(a.notes || '').trim();
+            const clientNote = String(c?.notes || '').trim();
             return `<article class="card record-card" data-open="${a.id}">
-              <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px">
-                <div>
+              <div class="record-card__row">
+                <div class="record-card__main">
                   <div style="font-weight:700">${whenLine}</div>
                   <div class="status-line">${clientLine}</div>
+                  <div style="margin-top:8px;font-weight:600">${svc}</div>
+                  <div class="status-line">${price} · сложн. ${diff}</div>
                 </div>
-                <div class="record-card__head-actions">
-                  <span class="${F.appointmentBadgeClass(a, nowMs)}">${esc(F.appointmentStatusLabel(a, nowMs))}</span>
+                <div class="record-card__aside">
+                  <div class="record-card__head-actions">
+                    <span class="${F.appointmentBadgeClass(a, nowMs)}">${esc(F.appointmentStatusLabel(a, nowMs))}</span>
+                  </div>
+                  ${htmlAppointmentNotesBlock(clientNote, visitNote)}
                 </div>
               </div>
-              <div style="margin-top:8px;font-weight:600">${svc}</div>
-              <div class="status-line">${price} · сложн. ${diff}</div>
               <div class="record-card__appt-actions">
                 <button type="button" class="btn btn-secondary" style="padding:10px" data-edit="${a.id}">Редактировать</button>
                 <button type="button" class="btn btn-primary" style="padding:10px" data-done="${a.id}">Завершить</button>
@@ -762,18 +790,27 @@ async function renderToday(db, meta, go) {
           const c = clientMap[a.clientId];
           const visits = appointments.filter((x) => x.clientId === a.clientId).length;
           const star = visits > 1 ? '<span class="badge" title="Повторный">⭐</span>' : '';
+          const visitNote = String(a.notes || '').trim();
+          const clientNote = String(c?.notes || '').trim();
           return `<article class="card record-card" data-open="${a.id}">
-          <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px">
-            <div><strong>${esc(F.formatTime(a.time))}</strong> · ${esc(c?.name || 'Клиент')} ${star}</div>
-            <div class="record-card__head-actions">
-              <span class="${F.appointmentBadgeClass(a, nowMs)}">${esc(F.appointmentStatusLabel(a, nowMs))}</span>
-              <button type="button" class="appt-delete-btn" data-delete-appt="${a.id}" data-appt-done="${
-                appointmentRowIsFinished(a) ? '1' : '0'
-              }" title="Удалить запись" aria-label="Удалить запись"><span class="appt-delete-btn__ico" aria-hidden="true">🗑</span></button>
+          <div class="record-card__row">
+            <div class="record-card__main">
+              <div><strong>${esc(F.formatTime(a.time))}</strong> · ${esc(c?.name || 'Клиент')} ${star}</div>
+              <div style="margin-top:6px;font-weight:600">${esc(a.serviceNameSnapshot || '')}</div>
+              <div class="status-line">План: ${esc(F.minutesToLabel(a.plannedMinutes))} · Сложн.: ${a.difficulty || '—'}</div>
+              ${
+                a.status === 'done'
+                  ? `<div class="status-line">Оплачено: ${F.money(a.receivedRub || 0)} · Прибыль: ${F.money(a.profitRub || 0)}</div>`
+                  : ''
+              }
+            </div>
+            <div class="record-card__aside">
+              <div class="record-card__head-actions">
+                <span class="${F.appointmentBadgeClass(a, nowMs)}">${esc(F.appointmentStatusLabel(a, nowMs))}</span>
+              </div>
+              ${htmlAppointmentNotesBlock(clientNote, visitNote)}
             </div>
           </div>
-          <div style="margin-top:6px;font-weight:600">${esc(a.serviceNameSnapshot || '')}</div>
-          <div class="status-line">План: ${esc(F.minutesToLabel(a.plannedMinutes))} · Сложн.: ${a.difficulty || '—'}</div>
           ${
             a.status === 'scheduled'
               ? `<div class="record-card__appt-actions">
@@ -789,8 +826,7 @@ async function renderToday(db, meta, go) {
               }
             </div>`
               : a.status === 'done'
-                ? `<div class="status-line">Оплачено: ${F.money(a.receivedRub || 0)} · Прибыль: ${F.money(a.profitRub || 0)}</div>
-                  <div class="record-card__appt-actions">
+                ? `<div class="record-card__appt-actions">
                     <button type="button" class="btn btn-secondary" style="padding:10px" data-edit="${a.id}">Редактировать</button>
                   </div>`
                 : ''
@@ -847,7 +883,10 @@ async function renderToday(db, meta, go) {
     </div>`
     : '';
 
-  const serviceBlock = `<div class="card svc-data-card" style="margin-top:20px">${htmlDataBackupCard()}</div>`;
+  const serviceBlock = `
+    <div class="card svc-data-card" style="margin-top:20px">${htmlDataBackupCard()}</div>
+    <div class="card svc-data-card" style="margin-top:12px">${htmlCleanupAfterTestingCard()}</div>
+  `;
 
   return `<header class="page-header">
     <div>
@@ -903,37 +942,12 @@ async function renderToday(db, meta, go) {
 }
 
 function attachAppointmentDeleteButtons(root, db, go, refresh) {
-  root.querySelectorAll('[data-delete-appt]').forEach((btn) => {
-    btn.addEventListener(
-      'click',
-      (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        const id = Number(btn.getAttribute('data-delete-appt'));
-        if (!id) return;
-        const msg =
-          'Удалить запись?\nЗапись исчезнет из списка. Клиент, услуги и материалы останутся.';
-        void (async () => {
-          const ok = await confirmDialog(msg, {
-            leftLabel: 'Отмена',
-            rightLabel: 'Удалить',
-            focusLeft: true,
-          });
-          if (!ok) return;
-          try {
-            await db.deleteAppointment(id);
-            await refresh();
-            const cur = (location.hash.slice(1) || 'today').split('?')[0];
-            go(cur);
-          } catch (err) {
-            console.error(err);
-            toast('Не удалось удалить запись.');
-          }
-        })();
-      },
-      true
-    );
-  });
+  // Удаление записи должно происходить только через сценарий:
+  // «Отменить» → «Создано ошибочно» (см. обработчики cancel).
+  void root;
+  void db;
+  void go;
+  void refresh;
 }
 
 function openRescheduleAppointmentModal(ap, db, refresh, go) {
@@ -1220,6 +1234,41 @@ function attachServiceBlock(root, db, go, refresh) {
     document.getElementById('import-file')?.click();
   });
   attachExcelClientButtons(root);
+
+  root.querySelector('#svc-clear-appts')?.addEventListener('click', async () => {
+    const ok = await confirmDialog(
+      'Удалить все записи? Клиенты, прайс, материалы и настройки останутся. Это действие нельзя отменить.',
+      { leftLabel: 'Отмена', rightLabel: 'Удалить', focusLeft: true }
+    );
+    if (!ok) return;
+    try {
+      await db.clearAllAppointments();
+      await refresh();
+      go('today');
+      toast('Записи очищены');
+    } catch (e) {
+      console.error(e);
+      toast('Не удалось очистить записи');
+    }
+  });
+
+  root.querySelector('#svc-reset-app')?.addEventListener('click', async () => {
+    const ok = await confirmDialog(
+      'Вы точно хотите удалить все данные и начать с нуля? Это действие нельзя отменить.',
+      { leftLabel: 'Отмена', rightLabel: 'Удалить всё', focusLeft: true }
+    );
+    if (!ok) return;
+    try {
+      sessionStorage.removeItem(WIZARD_KEY);
+      await db.resetAppPreserveAccess();
+      await refresh();
+      go('today');
+      toast('Приложение сброшено');
+    } catch (e) {
+      console.error(e);
+      toast('Не удалось сбросить приложение');
+    }
+  });
 }
 
 async function renderRecords(db, go) {
@@ -1235,21 +1284,23 @@ async function renderRecords(db, go) {
     ? list
         .map((a) => {
           const c = cmap[a.clientId];
+          const visitNote = String(a.notes || '').trim();
+          const clientNote = String(c?.notes || '').trim();
           return `<article class="card record-card" data-rec="${a.id}">
-          <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px">
-            <div>
+          <div class="record-card__row">
+            <div class="record-card__main">
               <div style="font-weight:700">${esc(F.formatDateRu(a.date))} · ${esc(F.formatTime(a.time))}</div>
               <div class="status-line">${esc(c?.name || 'Клиент')}</div>
+              <div style="margin-top:8px;font-weight:600">${esc(a.serviceNameSnapshot || '')}</div>
+              <div class="status-line">${F.money(a.priceRub || 0)} · сложн. ${a.difficulty || '—'}</div>
             </div>
-            <div class="record-card__head-actions">
-              <span class="${F.appointmentBadgeClass(a, nowMs)}">${esc(F.appointmentStatusLabel(a, nowMs))}</span>
-              <button type="button" class="appt-delete-btn" data-delete-appt="${a.id}" data-appt-done="${
-                appointmentRowIsFinished(a) ? '1' : '0'
-              }" title="Удалить запись" aria-label="Удалить запись"><span class="appt-delete-btn__ico" aria-hidden="true">🗑</span></button>
+            <div class="record-card__aside">
+              <div class="record-card__head-actions">
+                <span class="${F.appointmentBadgeClass(a, nowMs)}">${esc(F.appointmentStatusLabel(a, nowMs))}</span>
+              </div>
+              ${htmlAppointmentNotesBlock(clientNote, visitNote)}
             </div>
           </div>
-          <div style="margin-top:8px;font-weight:600">${esc(a.serviceNameSnapshot || '')}</div>
-          <div class="status-line">${F.money(a.priceRub || 0)} · сложн. ${a.difficulty || '—'}</div>
           ${
             a.status === 'scheduled'
               ? `<div class="record-card__appt-actions" style="margin-top:8px">
@@ -1441,7 +1492,7 @@ async function renderClientDetail(db, id, go) {
         <p class="status-line">Всего оплат: ${F.money(totalPaid)}</p>
       </div>
       <div class="card">
-        <div class="card-title">Заметки</div>
+        <div class="card-title">Заметка о клиенте</div>
         <p id="cd-ro-notes" style="margin:0;white-space:pre-wrap">${esc(client.notes || '—')}</p>
       </div>
       <h2 style="font-size:1rem;margin:16px 0 8px">История</h2>
@@ -1457,8 +1508,10 @@ async function renderClientDetail(db, id, go) {
         client.phone || ''
       )}" />
       <p class="muted" style="font-size:0.82rem;margin:-6px 0 10px;line-height:1.4">Введите 11 цифр. Можно писать без пробелов: 89774720425</p>
-      <label class="label" for="cd-ed-notes">Заметка</label>
-      <textarea class="field" id="cd-ed-notes" rows="4" placeholder="Заметка">${esc(client.notes || '')}</textarea>
+      <label class="label" for="cd-ed-notes">Заметка о клиенте</label>
+      <textarea class="field" id="cd-ed-notes" rows="4" placeholder="Например: не любит тугое плетение, постоянный клиент, пишет только в Telegram">${esc(
+        client.notes || ''
+      )}</textarea>
       <div style="display:flex;flex-direction:column;gap:10px;margin-top:16px">
         <button type="button" class="btn btn-primary" id="cd-ed-save">Сохранить</button>
         <button type="button" class="btn btn-secondary" id="cd-ed-cancel">Отмена</button>
@@ -3017,6 +3070,9 @@ async function renderSettings(db, meta, go, refresh) {
         `<p class="svc-data-footnote">При загрузке файла все данные заменятся — сначала сохраните копию. Импорт клиентов (имя и телефон) только добавляет записи в справочник.</p>`
       )}
     </div>
+    <div class="card svc-data-card" style="margin-top:12px">
+      ${htmlCleanupAfterTestingCard()}
+    </div>
   </div>`;
 }
 
@@ -3098,13 +3154,19 @@ async function renderWizard(root, db, go, opts = {}) {
   let services = await db.listServices();
   let materials = await db.listMaterials();
 
+  const wizardParams = new URLSearchParams(location.hash.split('?')[1] || '');
+  const wizardFrom = String(wizardParams.get('from') || '').trim();
+  const wizardBackTarget =
+    wizardFrom === 'records' ? 'records' : wizardFrom === 'today' ? 'today' : 'today';
+
   const editId = Number(opts.editAppointmentId) || null;
   if (editId && Number(w.editingAppointmentId) !== editId) {
     const ap = await db.getAppointment(editId);
     if (ap) {
       w = {
-        step: 5,
+        step: 1,
         editingAppointmentId: editId,
+        editOriginalClientId: ap.clientId,
         clientId: ap.clientId,
         clientPickSource: 'existing',
         serviceId: ap.serviceId ?? null,
@@ -3117,10 +3179,13 @@ async function renderWizard(root, db, go, opts = {}) {
         plannedMinutes: ap.plannedMinutes || 120,
         priceRub: ap.priceRub || 0,
         materialsPlan: ap.materialsPlan || [],
-        serviceAdjustNote: ap.notes || '',
+        serviceAdjustNote: '',
         comment: ap.notes || '',
         status: ap.status || 'scheduled',
       };
+      // Важно: при открытии редактирования всегда начинаем с карточки услуги,
+      // даже если ранее пользователь нажимал «Заменить услугу».
+      delete w.replacingService;
       saveWizard(w);
     }
   }
@@ -3144,6 +3209,7 @@ async function renderWizard(root, db, go, opts = {}) {
     const name = esc(wObj.serviceNameSnapshot || '—');
     const price = F.money(wObj.priceRub || 0);
     const timeLabel = esc(F.minutesToLabel(Number(wObj.plannedMinutes) || 0));
+    const diff = Math.max(1, Math.min(5, Math.round(Number(wObj.difficulty) || 2)));
     const editBtn = withEditBtn
       ? `<button type="button" class="btn btn-secondary" style="width:100%;margin-top:10px" id="w-open-adjust-service">Добавить наценку / время</button>`
       : '';
@@ -3152,6 +3218,7 @@ async function renderWizard(root, db, go, opts = {}) {
       <p class="status-line" style="margin:4px 0">Услуга: ${name}</p>
       <p class="status-line" style="margin:4px 0">Цена: ${price}</p>
       <p class="status-line" style="margin:4px 0">Время: ${timeLabel}</p>
+      <p class="status-line" style="margin:4px 0">Сложность: ${esc(String(diff))}</p>
       ${editBtn}
     </div>`;
   }
@@ -3174,9 +3241,150 @@ async function renderWizard(root, db, go, opts = {}) {
 
     let step = w.step || 1;
 
+    if (w.editingClientDetails === true) {
+      const cid = Number(w.clientId) || 0;
+      const row = cid > 0 ? await db.getClient(cid) : null;
+      if (!row) {
+        toast('Клиент не найден.');
+        delete w.editingClientDetails;
+        saveWizard(w);
+        paint();
+        return;
+      }
+      const nameInit = String(row.name || '').trim();
+      const phoneInit = String(row.phone || '').trim();
+      const notesInit = String(row.notes || '').trim();
+      root.innerHTML = `<div class="content">
+        <div class="back-row"><button type="button" class="btn btn-ghost" style="width:auto" data-cl-back>Назад</button></div>
+        <div class="step-bar">Шаг 1 из 4 · Клиент</div>
+        <h1 style="margin-top:0;font-size:1.35rem">Редактирование клиента</h1>
+        <label class="label" for="w-cl-name">Имя</label>
+        <input class="field" id="w-cl-name" value="${esc(nameInit)}" />
+        <label class="label" for="w-cl-phone">Телефон</label>
+        <input class="field" id="w-cl-phone" value="${esc(phoneInit)}" inputmode="tel" placeholder="Например: 89774720425" />
+        <p class="muted" style="font-size:0.82rem;margin:-6px 0 10px;line-height:1.4">Введите 11 цифр. Начинается с 7 или 8.</p>
+        <label class="label" for="w-cl-notes">Заметка о клиенте</label>
+        <textarea class="field" id="w-cl-notes" rows="3" placeholder="Например: не любит тугое плетение, постоянный клиент, пишет только в Telegram">${esc(
+          notesInit
+        )}</textarea>
+        <div class="wizard-footer">
+          <button type="button" class="btn btn-primary" id="w-cl-save">Сохранить</button>
+        </div>
+      </div>`;
+
+      root.querySelector('[data-cl-back]')?.addEventListener('click', () => {
+        delete w.editingClientDetails;
+        saveWizard(w);
+        paint();
+      });
+
+      root.querySelector('#w-cl-save')?.addEventListener('click', async () => {
+        const name = String(root.querySelector('#w-cl-name')?.value || '').trim();
+        const phone = String(root.querySelector('#w-cl-phone')?.value || '').trim();
+        const notes = String(root.querySelector('#w-cl-notes')?.value || '').trim();
+        if (!name) {
+          toast('Введите имя клиента.');
+          return;
+        }
+        if (!phone) {
+          toast('Введите номер телефона клиента.');
+          return;
+        }
+        const v = F.validateClientPhoneRu(phone);
+        if (!v.ok) {
+          toast('Проверьте номер телефона. Для России нужно 11 цифр: например, 8 999 123-45-67.');
+          return;
+        }
+        try {
+          await db.updateClient(cid, { name, phone, notes });
+          delete w.editingClientDetails;
+          saveWizard(w);
+          toast('Клиент сохранён');
+          paint();
+        } catch (e) {
+          console.error(e);
+          toast('Не удалось сохранить клиента');
+        }
+      });
+      return;
+    }
+
+    if (w.editingServiceParams === true) {
+      const curPrice = Math.max(0, Number(w.priceRub) || 0);
+      const curMin = Math.max(0, Number(w.plannedMinutes) || 0);
+      const hInit = Math.floor(curMin / 60);
+      const mInit = curMin % 60;
+      const diffInit = Math.max(1, Math.min(5, Math.round(Number(w.difficulty) || 2)));
+      const hourOpts = Array.from({ length: 13 }, (_, i) => {
+        const sel = i === hInit ? ' selected' : '';
+        return `<option value="${i}"${sel}>${String(i).padStart(2, '0')}</option>`;
+      }).join('');
+      const minuteOpts = [0, 15, 30, 45]
+        .map((v) => {
+          const sel = v === mInit ? ' selected' : '';
+          return `<option value="${v}"${sel}>${String(v).padStart(2, '0')}</option>`;
+        })
+        .join('');
+      const diffOpts = [1, 2, 3, 4, 5]
+        .map((d) => {
+          const sel = d === diffInit ? ' selected' : '';
+          return `<option value="${d}"${sel}>${d}</option>`;
+        })
+        .join('');
+
+      root.innerHTML = `<div class="content">
+        <div class="back-row"><button type="button" class="btn btn-ghost" style="width:auto" data-svcparam-back>Назад</button></div>
+        <div class="step-bar">Шаг 2 из 4 · Услуга</div>
+        <h1 style="margin-top:0;font-size:1.35rem">Параметры услуги в этой записи</h1>
+        ${wizardServiceSummaryCard(w, false)}
+        <label class="label" for="w-svc-price">Цена в этой записи, ₽</label>
+        <input class="field" id="w-svc-price" type="number" min="0" step="100" value="${esc(
+          String(curPrice)
+        )}" />
+        <p class="card-title" style="margin-top: 10px">Плановое время</p>
+        <div class="row" style="align-items:flex-end">
+          <div style="flex:1">
+            <label class="label" for="w-svc-h">Часы</label>
+            <select class="field" id="w-svc-h">${hourOpts}</select>
+          </div>
+          <div style="flex:1">
+            <label class="label" for="w-svc-m">Минуты</label>
+            <select class="field" id="w-svc-m">${minuteOpts}</select>
+          </div>
+        </div>
+        <label class="label" for="w-svc-diff" style="margin-top:10px">Сложность</label>
+        <select class="field" id="w-svc-diff">${diffOpts}</select>
+        <div class="wizard-footer">
+          <button type="button" class="btn btn-primary" id="w-svc-save">Сохранить параметры</button>
+        </div>
+      </div>`;
+
+      root.querySelector('[data-svcparam-back]')?.addEventListener('click', () => {
+        delete w.editingServiceParams;
+        saveWizard(w);
+        paint();
+      });
+      root.querySelector('#w-svc-save')?.addEventListener('click', () => {
+        const p = Math.max(0, Number(root.querySelector('#w-svc-price')?.value) || 0);
+        const hh = Math.max(0, Number(root.querySelector('#w-svc-h')?.value) || 0);
+        const mm = Math.max(0, Number(root.querySelector('#w-svc-m')?.value) || 0);
+        const total = Math.max(0, hh * 60 + mm);
+        const d = Math.max(1, Math.min(5, Math.round(Number(root.querySelector('#w-svc-diff')?.value) || 2)));
+        w.priceRub = p;
+        w.plannedMinutes = total;
+        w.difficulty = d;
+        delete w.editingServiceParams;
+        saveWizard(w);
+        paint();
+      });
+      return;
+    }
+
     if (
       w.adjustingService &&
-      (Number(w.adjustReturnStep) === 4 || Number(w.adjustReturnStep) === 5)
+      (Number(w.adjustReturnStep) === 2 ||
+        Number(w.adjustReturnStep) === 4 ||
+        Number(w.adjustReturnStep) === 5)
     ) {
       const retStep = Number(w.adjustReturnStep);
       let baseP = 0;
@@ -3291,16 +3499,30 @@ async function renderWizard(root, db, go, opts = {}) {
 
       const pickedPhoneLine =
         picked && String(picked.phone ?? '').trim()
-          ? `<div class="status-line">${esc(F.formatClientPhonePretty(picked.phone))}</div>`
+          ? `<p class="status-line" style="margin:4px 0">Телефон: ${esc(
+              F.formatClientPhonePretty(picked.phone)
+            )}</p>`
           : '';
+      const pickedNotesRaw = picked ? String(picked.notes || '').trim() : '';
+      const pickedNotesLine = pickedNotesRaw
+        ? `<p class="status-line" style="margin:4px 0">${esc(pickedNotesRaw)}</p>`
+        : '';
       const pickedBanner = picked
-        ? `<div class="card compact wizard-picked-client" style="margin-bottom:12px;border-color:var(--accent);background:var(--accent-soft)">
-          <div class="wizard-picked-client__main">
-            <div class="card-title" style="color:var(--accent);margin-bottom:4px">Выбран клиент</div>
-            <div style="font-weight:700">${esc(picked.name)}</div>
-            ${pickedPhoneLine}
+        ? `<div class="card compact wizard-step1-client-card" style="margin-bottom:14px;background:var(--accent-soft);border-color:var(--accent)">
+          <div class="card-title" style="margin-bottom:6px;color:var(--accent)">Клиент в записи</div>
+          <p class="status-line" style="margin:4px 0;font-weight:600;color:var(--text)">${esc(
+            picked.name
+          )}</p>
+          ${pickedPhoneLine}
+          ${pickedNotesLine}
+          <div class="wizard-step1-client-card__actions">
+            ${
+              Number(w.editingAppointmentId) > 0
+                ? `<button type="button" class="btn btn-secondary" data-edit-client>Редактировать клиента</button>
+                  <button type="button" class="btn btn-secondary" data-clear-client-pick>Сменить клиента</button>`
+                : `<button type="button" class="btn btn-secondary" data-clear-client-pick>Сменить клиента</button>`
+            }
           </div>
-          <button type="button" class="btn btn-secondary wizard-picked-client__clear" data-clear-client-pick>Сменить</button>
         </div>`
         : '';
 
@@ -3314,7 +3536,7 @@ async function renderWizard(root, db, go, opts = {}) {
         <input class="field" id="w-new-name" placeholder="Имя" />
         <input class="field" id="w-new-phone" placeholder="Например: 89774720425" inputmode="tel" />
         <p class="muted" style="font-size:0.82rem;margin:-6px 0 10px;line-height:1.4">Введите 11 цифр. Можно писать без пробелов: 89774720425</p>
-        <textarea class="field" id="w-new-notes" placeholder="Заметка"></textarea>`;
+        <textarea class="field" id="w-new-notes" placeholder="Заметка о клиенте"></textarea>`;
 
       root.innerHTML = `<div class="content">
         <div class="back-row"><button type="button" class="btn btn-ghost" style="width:auto;padding:8px 12px" data-cancel>Отмена</button></div>
@@ -3416,9 +3638,15 @@ async function renderWizard(root, db, go, opts = {}) {
         saveWizard(w);
         paint();
       });
+      root.querySelector('[data-edit-client]')?.addEventListener('click', () => {
+        if (!Number(w.clientId)) return;
+        w.editingClientDetails = true;
+        saveWizard(w);
+        paint();
+      });
       root.querySelector('[data-cancel]')?.addEventListener('click', () => {
         sessionStorage.removeItem(WIZARD_KEY);
-        go('today');
+        go(w.editingAppointmentId ? wizardBackTarget : 'today');
       });
       root.querySelector('#w1-next')?.addEventListener('click', async () => {
         if (!picked) flushWizardSearch();
@@ -3435,19 +3663,28 @@ async function renderWizard(root, db, go, opts = {}) {
             return;
           }
           clients = liveClients;
-          delete w.serviceId;
-          delete w.catalogServicePicked;
-          delete w.serviceNameSnapshot;
-          delete w.priceRub;
-          delete w.plannedMinutes;
-          delete w.serviceBasePriceRub;
-          delete w.serviceBasePlannedMinutes;
-          delete w.serviceAdjustNote;
-          delete w.adjustingService;
-          delete w.adjustReturnStep;
-          w.difficulty = 2;
-          w.tags = [];
-          w.materialsPlan = [];
+          const isEditing = Number(w.editingAppointmentId) > 0;
+          const sameClient =
+            isEditing && Number(w.editOriginalClientId) > 0
+              ? Number(w.clientId) === Number(w.editOriginalClientId)
+              : false;
+          // В режиме редактирования не сбрасываем услугу/материалы, если клиент не менялся.
+          // Если клиент изменили — логично выбрать услугу заново.
+          if (!isEditing || !sameClient) {
+            delete w.serviceId;
+            delete w.catalogServicePicked;
+            delete w.serviceNameSnapshot;
+            delete w.priceRub;
+            delete w.plannedMinutes;
+            delete w.serviceBasePriceRub;
+            delete w.serviceBasePlannedMinutes;
+            delete w.serviceAdjustNote;
+            delete w.adjustingService;
+            delete w.adjustReturnStep;
+            w.difficulty = 2;
+            w.tags = [];
+            w.materialsPlan = [];
+          }
           w.step = 2;
           saveWizard(w);
           paint();
@@ -3495,8 +3732,74 @@ async function renderWizard(root, db, go, opts = {}) {
       const svcList = [...services].sort((a, b) =>
         String(a.name || '').localeCompare(String(b.name || ''), 'ru')
       );
-      const selectedSvcId =
+      // При редактировании старых записей serviceId мог не сохраниться.
+      // Тогда восстанавливаем выбор по снимку названия услуги.
+      if ((!w.catalogServicePicked || !Number(w.serviceId)) && String(w.serviceNameSnapshot || '').trim()) {
+        const snap = String(w.serviceNameSnapshot || '').trim().toLowerCase();
+        const matched = svcList.find(
+          (s) => s && s.isActive !== false && String(s.name || '').trim().toLowerCase() === snap
+        );
+        if (matched && Number(matched.id) > 0) {
+          w.catalogServicePicked = true;
+          w.serviceId = Number(matched.id);
+          w.serviceNameSnapshot = String(matched.name || '').trim() || w.serviceNameSnapshot;
+          w.serviceBasePriceRub = Number(matched.basePrice) || 0;
+          w.serviceBasePlannedMinutes = Math.max(0, Number(matched.plannedMinutes) || 0);
+          if (w.priceRub == null) w.priceRub = Number(matched.basePrice) || 0;
+          if (w.plannedMinutes == null) w.plannedMinutes = Number(matched.plannedMinutes) || 0;
+          saveWizard(w);
+        }
+      }
+
+      let selectedSvcId =
         w.catalogServicePicked && Number(w.serviceId) > 0 ? Number(w.serviceId) : 0;
+
+      const isEditing = Number(w.editingAppointmentId) > 0;
+      const isReplacing = isEditing && w.replacingService === true;
+      const hasServiceSnapshot = String(w.serviceNameSnapshot || '').trim() !== '';
+
+      // UX для редактирования: сначала показываем карточку услуги, а список — только по кнопке «Заменить услугу».
+      if (isEditing && !isReplacing && (selectedSvcId > 0 || hasServiceSnapshot)) {
+        root.innerHTML = `<div class="content">
+          <div class="back-row"><button type="button" class="btn btn-ghost" style="width:auto" data-w-back>Назад</button></div>
+          <div class="step-bar">Шаг 2 из 4 · Услуга</div>
+          <h1 style="margin-top:0;font-size:1.35rem">Услуга в записи</h1>
+          ${wizardServiceSummaryCard(w, false)}
+          <button type="button" class="btn btn-secondary" id="w2-edit-params">Изменить цену / время</button>
+          <button type="button" class="btn btn-secondary" id="w2-replace">Заменить услугу</button>
+          <div class="wizard-footer">
+            <button type="button" class="btn btn-primary" id="w2-next">Далее</button>
+          </div>
+        </div>`;
+
+        root.querySelector('[data-w-back]')?.addEventListener('click', () => {
+          delete w.adjustingService;
+          delete w.adjustReturnStep;
+          w.step = 1;
+          saveWizard(w);
+          paint();
+        });
+
+        root.querySelector('#w2-edit-params')?.addEventListener('click', () => {
+          w.editingServiceParams = true;
+          saveWizard(w);
+          paint();
+        });
+
+        root.querySelector('#w2-replace')?.addEventListener('click', () => {
+          w.replacingService = true;
+          saveWizard(w);
+          paint();
+        });
+
+        root.querySelector('#w2-next')?.addEventListener('click', () => {
+          w.step = 4;
+          saveWizard(w);
+          paint();
+        });
+        return;
+      }
+
       const listButtons = svcList
         .map((s) => {
           const sid = Number(s.id);
@@ -3526,14 +3829,20 @@ async function renderWizard(root, db, go, opts = {}) {
         <button type="button" class="btn btn-ghost w2-pricelist-link" style="display:inline;padding:4px 8px;width:auto;font-size:inherit;vertical-align:baseline">Добавить в прайс</button>
       </p>`;
 
+      const step2AdjustCard =
+        selectedSvcId > 0 && w.catalogServicePicked
+          ? wizardServiceSummaryCard(w, true)
+          : '';
+
       root.innerHTML = `<div class="content">
         <div class="back-row"><button type="button" class="btn btn-ghost" style="width:auto" data-w-back>Назад</button></div>
         <div class="step-bar">Шаг 2 из 4 · Услуга</div>
         <h1 style="margin-top:0;font-size:1.35rem">Выберите услугу</h1>
         ${catalogBlock}
+        ${step2AdjustCard}
         ${svcList.length ? pricelistHint : ''}
         <div class="wizard-footer">
-          <button type="button" class="btn btn-primary" id="w2-next">Далее</button>
+          <button type="button" class="btn btn-primary" id="w2-next" ${selectedSvcId ? '' : 'disabled'}>Далее</button>
         </div>
       </div>`;
       root.querySelector('#w-empty-add-service')?.addEventListener('click', () =>
@@ -3562,11 +3871,19 @@ async function renderWizard(root, db, go, opts = {}) {
             Number.isFinite(d) && d >= 1 && d <= 5 ? Math.round(d) : 2;
           delete w.adjustingService;
           delete w.adjustReturnStep;
+          if (Number(w.editingAppointmentId) > 0) w.replacingService = false;
           saveWizard(w);
           paint();
         });
       });
       root.querySelector('[data-w-back]')?.addEventListener('click', () => {
+        // В режиме «Заменить услугу» кнопка назад сворачивает список и возвращает карточку услуги.
+        if (Number(w.editingAppointmentId) > 0 && w.replacingService === true) {
+          w.replacingService = false;
+          saveWizard(w);
+          paint();
+          return;
+        }
         delete w.serviceId;
         delete w.catalogServicePicked;
         delete w.adjustingService;
@@ -3590,6 +3907,12 @@ async function renderWizard(root, db, go, opts = {}) {
           return;
         }
         w.step = 4;
+        saveWizard(w);
+        paint();
+      });
+      root.querySelector('#w-open-adjust-service')?.addEventListener('click', () => {
+        w.adjustingService = true;
+        w.adjustReturnStep = 2;
         saveWizard(w);
         paint();
       });
@@ -3677,7 +4000,7 @@ async function renderWizard(root, db, go, opts = {}) {
         <div class="back-row"><button type="button" class="btn btn-ghost" style="width:auto" data-w-back>Назад</button></div>
         <div class="step-bar">Шаг 3 из 4 · Материалы</div>
         <h1 style="margin-top:0;font-size:1.35rem">План по материалам</h1>
-        ${wizardServiceSummaryCard(w, true)}
+        ${wizardServiceSummaryCard(w, false)}
         <p class="muted" style="line-height:1.45;margin-bottom:12px">Здесь указывается плановый расход. Фактическое списание произойдёт при завершении записи.</p>
         <button type="button" class="btn btn-secondary" style="width:100%" id="w-open-mat-pick">+ Добавить материал</button>
         <p class="muted" style="font-size:0.82rem;margin:10px 0 0">Нужна новая позиция? <button type="button" class="btn btn-ghost" style="display:inline;padding:4px 8px;width:auto;font-size:inherit;vertical-align:baseline" id="w-go-add-material-catalog">Добавить на склад</button></p>
@@ -3777,12 +4100,6 @@ async function renderWizard(root, db, go, opts = {}) {
         saveWizard(w);
         paint();
       });
-      root.querySelector('#w-open-adjust-service')?.addEventListener('click', () => {
-        w.adjustingService = true;
-        w.adjustReturnStep = 4;
-        saveWizard(w);
-        paint();
-      });
       root.querySelector('#w4-next')?.addEventListener('click', () => {
         const nextPlan = [];
         for (const row of w.materialsPlan || []) {
@@ -3844,7 +4161,7 @@ async function renderWizard(root, db, go, opts = {}) {
         <div class="back-row"><button type="button" class="btn btn-ghost" style="width:auto" data-w-back>Назад</button></div>
         <div class="step-bar">Шаг 4 из 4 · Дата и время</div>
         <h1 style="margin-top:0;font-size:1.35rem">${headerTitle}</h1>
-        ${wizardServiceSummaryCard(w, true)}
+        ${wizardServiceSummaryCard(w, false)}
         <label class="label" for="w-date">Дата</label>
         <div class="date-overlay">
           <input class="field date-overlay__ui" id="w-date-ui" type="text" readonly value="${esc(
@@ -3872,8 +4189,8 @@ async function renderWizard(root, db, go, opts = {}) {
         </div>
         <label class="label" for="w-status" style="margin-top:14px">Статус записи</label>
         <select class="field" id="w-status">${statusOpts}</select>
-        <label class="label" for="w-comment" style="margin-top:14px">Комментарий</label>
-        <textarea class="field" id="w-comment" rows="3" placeholder="Например: клиент опоздал, попросила сделать плотнее">${esc(
+        <label class="label" for="w-comment" style="margin-top:14px">Заметка к визиту</label>
+        <textarea class="field" id="w-comment" rows="3" placeholder="Например: придёт с ребёнком, попросила плотнее, принесёт свой материал">${esc(
           String(w.comment || w.serviceAdjustNote || '').trim()
         )}</textarea>
         <div class="wizard-footer">
@@ -3919,12 +4236,6 @@ async function renderWizard(root, db, go, opts = {}) {
         w.step = 4;
         delete w.adjustingService;
         delete w.adjustReturnStep;
-        saveWizard(w);
-        paint();
-      });
-      root.querySelector('#w-open-adjust-service')?.addEventListener('click', () => {
-        w.adjustingService = true;
-        w.adjustReturnStep = 5;
         saveWizard(w);
         paint();
       });
@@ -4037,10 +4348,11 @@ async function renderWizard(root, db, go, opts = {}) {
         toast('Запись сохранена');
         if (desiredStatus === 'done' && savedId) {
           toast('Осталось нажать «Завершить», чтобы посчитать прибыль.');
-          go(`complete-${savedId}?from=today`);
+          const back = w.editingAppointmentId ? wizardBackTarget : 'today';
+          go(`complete-${savedId}?from=${encodeURIComponent(back)}`);
           return;
         }
-        go('today');
+        go(w.editingAppointmentId ? wizardBackTarget : 'today');
       });
     }
   }

@@ -223,6 +223,22 @@ button.c-mat-remove:active {
   border: 1px solid var(--line);
 }
 
+.btn-cautious {
+  background: transparent;
+  color: var(--text);
+  border: 1px solid rgba(0, 0, 0, 0.18);
+  box-shadow: none;
+}
+
+.btn-cautious:hover {
+  border-color: rgba(0, 0, 0, 0.28);
+  background: var(--bg);
+}
+
+.btn-cautious:active {
+  transform: translateY(1px);
+}
+
 .material-detail__actions {
   display: flex;
   flex-wrap: wrap;
@@ -314,25 +330,18 @@ button.c-mat-remove:active {
   cursor: pointer;
 }
 
-/* Шаг мастера «Клиент»: «Сменить» не должен тянуться на всю ширину (.btn по умолчанию width:100%) */
-.wizard-picked-client {
+/* Шаг 1 мастера: карточка «Клиент в записи» — кнопки столбиком под контентом */
+.wizard-step1-client-card__actions {
   display: flex;
-  justify-content: space-between;
-  align-items: flex-start;
-  gap: 10px;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 12px;
 }
 
-.wizard-picked-client__main {
-  flex: 1;
-  min-width: 0;
-}
-
-.wizard-picked-client__clear.btn {
-  width: auto;
-  flex-shrink: 0;
-  align-self: center;
-  padding: 8px 12px;
-  font-size: 0.875rem;
+.wizard-step1-client-card__actions .btn {
+  width: 100%;
+  padding: 10px 12px;
+  font-size: 0.9rem;
   font-weight: 600;
 }
 
@@ -479,6 +488,21 @@ textarea.field {
   font-size: 0.85rem;
   color: var(--muted);
   margin-top: 6px;
+}
+
+.appt-notes {
+  margin-top: 6px;
+}
+
+.appt-notes__line {
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 0.82rem;
+  line-height: 1.35;
+}
+
+.appt-notes__line:first-child {
+  margin-top: 0;
 }
 
 .nav-bottom {
@@ -809,6 +833,33 @@ button.mat-pick-item:active {
 }
 
 /* Удаление записи: компактная корзина, удобная зона тапа */
+.record-card__row {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.record-card__main {
+  flex: 1;
+  min-width: 0;
+}
+
+.record-card__aside {
+  flex-shrink: 0;
+  max-width: 46%;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
+}
+
+.record-card__aside > .appt-notes {
+  margin-top: 0;
+  width: 100%;
+  text-align: left;
+}
+
 .record-card__head-actions {
   display: flex;
   flex-direction: column;

@@ -1191,6 +1191,42 @@ function createApi(db) {
     });
   }
 
+  async function clearAllAppointments() {
+    const tx = db.transaction('appointments', 'readwrite');
+    tx.objectStore('appointments').clear();
+    await txDone(tx);
+  }
+
+  async function resetAppPreserveAccess() {
+    const [activated, trialStartedAt] = await Promise.all([
+      getMeta('activated'),
+      getMeta('trialStartedAt'),
+    ]);
+
+    const tx = db.transaction(
+      ['meta', 'clients', 'services', 'materials', 'appointments', 'stockMovements'],
+      'readwrite'
+    );
+    const clearOrder = [
+      'stockMovements',
+      'appointments',
+      'materials',
+      'services',
+      'clients',
+      'meta',
+    ];
+    for (const name of clearOrder) tx.objectStore(name).clear();
+
+    const metaStore = tx.objectStore('meta');
+    if (activated === true) metaStore.put({ key: 'activated', value: true });
+    if (trialStartedAt != null && trialStartedAt !== '') {
+      metaStore.put({ key: 'trialStartedAt', value: Number(trialStartedAt) });
+    }
+
+    await txDone(tx);
+    await seedIfNeeded();
+  }
+
   const api = {
     raw: db,
     getMeta,
@@ -1235,6 +1271,8 @@ function createApi(db) {
     purgeDemoPackData,
     deleteOrArchiveMaterial,
     cleanupTestMaterials,
+    clearAllAppointments,
+    resetAppPreserveAccess,
   };
 
   return api;
