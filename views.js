@@ -403,6 +403,127 @@ function unitCodePriceLabel(unitCode) {
   return unitCode === 'pcs' ? 'штуку' : 'грамм';
 }
 
+/** Статус складской позиции: нет / мало / норма */
+function warehouseStockStatus(m) {
+  const stock = Math.max(0, Number(m.stock) || 0);
+  const minS = Math.max(0, Number(m.minStock) || 0);
+  if (stock === 0) {
+    return {
+      summary: 'out',
+      label: 'Нет в наличии',
+      badgeClass: 'badge out',
+    };
+  }
+  if (stock <= minS) {
+    return {
+      summary: 'low',
+      label: 'Мало',
+      badgeClass: 'badge warn',
+    };
+  }
+  return {
+    summary: 'ok',
+    label: 'Норма',
+    badgeClass: 'badge ok',
+  };
+}
+
+/** Заметные бейджи только на карточках вкладки «Склад» (не затрагивает «Материалы»). */
+function warehouseShelfBadgeClass(summary) {
+  if (summary === 'ok') return 'warehouse-badge warehouse-badge--ok';
+  if (summary === 'low') return 'warehouse-badge warehouse-badge--low';
+  return 'warehouse-badge warehouse-badge--out';
+}
+
+/** Сводка склада по активным материалам (как на экране «Склад»). */
+function summarizeWarehouseMaterials(materialsRaw) {
+  const materials = [...(materialsRaw || [])].sort((a, b) =>
+    String(a.name || '').localeCompare(String(b.name || ''), 'ru')
+  );
+  let valueSumRub = 0;
+  let finishingN = 0;
+  let outN = 0;
+  for (const m of materials) {
+    const stock = Math.max(0, Number(m.stock) || 0);
+    const price = Math.max(0, Number(m.pricePerUnit) || 0);
+    valueSumRub += Math.round(stock * price);
+    const st = warehouseStockStatus(m);
+    if (st.summary === 'out') outN += 1;
+    else if (st.summary === 'low') finishingN += 1;
+  }
+  return {
+    materials,
+    positionsTotal: materials.length,
+    valueSumRub,
+    finishingN,
+    outN,
+  };
+}
+
+/** Уникальные типы материалов для фильтра отчёта (активный справочник). */
+function collectMaterialTypesForReport(materialsRaw) {
+  const set = new Set();
+  for (const m of materialsRaw || []) {
+    const t = String(m.materialType ?? '').trim() || 'прочее';
+    set.add(t);
+  }
+  return [...set].sort((a, b) => a.localeCompare(b, 'ru'));
+}
+
+/** Попадает ли материал в отчёт по типу и подстроке поиска. */
+function materialMatchesWarehouseReportFilter(m, typeParam /* string | null */, queryTrimmed) {
+  const typeNeedle =
+    typeParam != null && String(typeParam).trim() !== ''
+      ? String(typeParam).trim()
+      : null;
+  if (typeNeedle) {
+    const mt = String(m.materialType ?? '').trim() || 'прочее';
+    if (mt !== typeNeedle) return false;
+  }
+  const q = String(queryTrimmed ?? '').trim().toLowerCase();
+  if (!q) return true;
+  const parts = [m.name, m.materialSeries, m.materialColor, m.materialColorCode].map((x) =>
+    String(x ?? '').toLowerCase()
+  );
+  return parts.some((p) => p.includes(q));
+}
+
+/** Строка для быстрого поиска по складу (экран «Склад», не отчёт). */
+function warehouseShelfSearchBlobLower(m) {
+  return [
+    m.name,
+    m.materialSeries,
+    m.materialColor,
+    m.materialColorCode,
+    m.materialType,
+  ]
+    .map((x) => String(x ?? '').toLowerCase())
+    .join(' ');
+}
+
+/** Текстовая строка для блока «Фильтр: …» в отчёте. */
+function warehouseReportFilterDescription(typeParam, queryTrimmed) {
+  const hasT = typeParam != null && String(typeParam).trim() !== '';
+  const hasQ = String(queryTrimmed ?? '').trim() !== '';
+  if (!hasT && !hasQ) return 'все материалы';
+  if (hasT && !hasQ) return `тип "${String(typeParam).trim()}"`;
+  if (!hasT && hasQ) return `поиск "${String(queryTrimmed).trim()}"`;
+  return `тип "${String(typeParam).trim()}", поиск "${String(queryTrimmed).trim()}"`;
+}
+
+/** Параметры фильтра отчёта по складу из hash (URLSearchParams уже декодирует значения). */
+function readWarehouseReportFilterParams() {
+  const params = new URLSearchParams(location.hash.split('?')[1] || '');
+  const rawType = params.get('type');
+  const rawQ = params.get('q');
+  const typeParam =
+    rawType != null && String(rawType).trim() !== ''
+      ? String(rawType).trim()
+      : null;
+  const queryTrimmed = rawQ != null ? String(rawQ).trim() : '';
+  return { typeParam, queryTrimmed };
+}
+
 /** Куда вести «Назад» с экрана complete-*: из «Записей» или по умолчанию «Сегодня». */
 function completeReturnTarget(route) {
   const raw = route || '';
@@ -430,6 +551,7 @@ function navHtml(active) {
     ['clients', '👤', 'Клиенты'],
     ['services', '💇', 'Прайс'],
     ['materials', '🧵', 'Материалы'],
+    ['warehouse', '📦', 'Склад'],
     ['finance', '💰', 'Финансы'],
   ];
   return `<nav class="nav-bottom" aria-label="Основное меню">
@@ -465,6 +587,47 @@ function isIsoYearMonth(v) {
   return mo >= 1 && mo <= 12;
 }
 
+/** Период экрана «Финансы» / отчёта из hash (#finance… или #finance-report…). */
+function readFinancePeriodFromHash(hashInput) {
+  const raw = String(hashInput ?? '').replace(/^#/, '');
+  const qPart = raw.includes('?') ? raw.split('?').slice(1).join('?') : '';
+  const params = new URLSearchParams(qPart);
+  const mode = params.get('m') || 'today';
+  const today = F.todayISO();
+  const curYm = today.slice(0, 7);
+  const isIsoDate = (v) => /^\d{4}-\d{2}-\d{2}$/.test(String(v || ''));
+  let selectedYm = curYm;
+  let from = today;
+  let to = today;
+  if (mode === 'month') {
+    const ymParam = params.get('ym');
+    selectedYm = isIsoYearMonth(ymParam) ? ymParam : curYm;
+    const r = monthRange(selectedYm);
+    from = r.from;
+    to = r.to;
+  } else if (mode === 'period') {
+    const fromParam = params.get('from');
+    const toParam = params.get('to');
+    from = isIsoDate(fromParam) ? fromParam : today;
+    to = isIsoDate(toParam) ? toParam : today;
+    if (from > to) {
+      const tmp = from;
+      from = to;
+      to = tmp;
+    }
+  }
+  return { mode, from, to, selectedYm, today };
+}
+
+function financeReturnQuery(state) {
+  const { mode, from, to, selectedYm } = state;
+  if (mode === 'month')
+    return `m=month&ym=${encodeURIComponent(selectedYm)}`;
+  if (mode === 'period')
+    return `m=period&from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`;
+  return 'm=today';
+}
+
 export async function mount(shell, ctx) {
   const { db, meta, route, go, refresh } = ctx;
   const parsed = parseRoute(route);
@@ -483,6 +646,8 @@ export async function mount(shell, ctx) {
     parsed.view === 'new' ||
     parsed.view === 'edit' ||
     parsed.view === 'complete' ||
+    parsed.view === 'finance-report' ||
+    parsed.view === 'warehouse-report' ||
     parsed.view === 'purchase' ||
     parsed.view === 'add-material' ||
     parsed.view === 'edit-material' ||
@@ -514,6 +679,10 @@ export async function mount(shell, ctx) {
     root.innerHTML = await renderMaterialDetail(db, parsed.id, go);
   } else if (parsed.view === 'materials') {
     root.innerHTML = await renderMaterials(db, go);
+  } else if (parsed.view === 'warehouse') {
+    root.innerHTML = await renderWarehouse(db);
+  } else if (parsed.view === 'warehouse-report') {
+    root.innerHTML = await renderWarehouseReport(db);
   } else if (parsed.view === 'services') {
     root.innerHTML = await renderServices(db);
   } else if (parsed.view === 'service') {
@@ -528,6 +697,8 @@ export async function mount(shell, ctx) {
     root.innerHTML = await renderEditMaterial(db, parsed.id, go);
   } else if (parsed.view === 'finance') {
     root.innerHTML = await renderFinance(db, go);
+  } else if (parsed.view === 'finance-report') {
+    root.innerHTML = await renderFinanceReport(db);
   } else if (parsed.view === 'settings') {
     root.innerHTML = await renderSettings(db, meta, go, refresh);
   } else if (parsed.view === 'new') {
@@ -1617,13 +1788,17 @@ async function renderMaterials(db, go) {
   const html = materials.length
     ? materials
         .map((m) => {
-          const low = Number(m.stock) <= Number(m.minStock);
+          const st = warehouseStockStatus(m);
+          const badgeHtml =
+            st.summary === 'ok'
+              ? ''
+              : `<span class="${st.badgeClass}">${esc(st.label)}</span>`;
           return `<article class="card material-card" data-open-material="${m.id}">
           <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px">
             <div style="flex:1;min-width:0">
               <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px">
                 <div style="font-weight:700">${esc(m.name)}</div>
-                ${low ? '<span class="badge warn">Мало</span>' : ''}
+                ${badgeHtml}
               </div>
           <div class="status-line">Тип: ${esc(m.materialType || 'прочее')}</div>
               <div class="status-line">Остаток: ${esc(String(m.stock))} ${esc(unitCodeShort(m.unit || m.baseUnit || 'g'))}</div>
@@ -1647,17 +1822,17 @@ async function renderMaterials(db, go) {
         .join('')
     : `<div class="card" style="text-align:center">
       <p class="empty-hint" style="padding:8px 0;margin:0">У вас пока нет материалов</p>
-      <button type="button" class="btn btn-primary" id="btn-add-mat-empty">＋ Добавить материал</button>
+      <button type="button" class="btn btn-primary" id="btn-add-mat-empty">＋ Создать материал</button>
     </div>`;
 
   return `<header class="page-header">
-    <div><h1>Материалы</h1><p class="sub">Справочник и склад</p></div>
+    <div><h1>Материалы</h1><p class="sub">Справочник материалов</p></div>
   </header>
   <div class="content">
     <div class="row" style="margin-bottom:12px">
-      <button type="button" class="btn btn-primary" id="btn-purchase">＋ Пополнить склад</button>
+      <button type="button" class="btn btn-primary" id="btn-create-material">＋ Создать материал</button>
     </div>
-    <p class="muted" style="margin:-4px 0 14px;font-size:0.88rem;line-height:1.45">Добавляйте материал на склад после покупки. Если позиции ещё нет в справочнике, создайте её прямо при пополнении.</p>
+    <p class="muted" style="margin:-4px 0 14px;font-size:0.88rem;line-height:1.45">Здесь заводятся карточки материалов. Пополнить остатки после покупки — во вкладке «Склад».</p>
     <button type="button" class="btn btn-cautious" id="btn-cleanup-test-mat">Очистить тестовые материалы</button>
     <div class="list-gap">${html}</div>
   </div>`;
@@ -1665,9 +1840,8 @@ async function renderMaterials(db, go) {
 
 export function attachMaterials(shell, db, go) {
   const root = shell.querySelector('#app-root') || shell;
-  root.querySelector('#btn-purchase')?.addEventListener('click', () => go('purchase'));
-  // Кнопку «Создать материал» скрыли — новый материал создаётся внутри «Пополнить склад».
-  root.querySelector('#btn-add-mat-empty')?.addEventListener('click', () => go('purchase'));
+  root.querySelector('#btn-create-material')?.addEventListener('click', () => go('add-material'));
+  root.querySelector('#btn-add-mat-empty')?.addEventListener('click', () => go('add-material'));
   root.querySelectorAll('[data-open-material]').forEach((card) => {
     card.addEventListener('click', (e) => {
       if (e.target.closest('[data-del-mat]')) return;
@@ -1713,6 +1887,262 @@ export function attachMaterials(shell, db, go) {
     } catch {
       toast('Не удалось очистить');
     }
+  });
+}
+
+async function renderWarehouse(db) {
+  const materialsRaw = await db.listMaterials();
+  const {
+    materials,
+    positionsTotal,
+    valueSumRub,
+    finishingN,
+    outN,
+  } = summarizeWarehouseMaterials(materialsRaw);
+
+  const reportTypeOpts = collectMaterialTypesForReport(materialsRaw)
+    .map((t) => `<option value="${esc(t)}">${esc(t)}</option>`)
+    .join('');
+  const reportFilterHtml = `
+    <div class="card warehouse-report-filter-card">
+      <div class="card-title">Фильтр отчёта</div>
+      <label class="label" for="wh-report-type">Тип материала</label>
+      <select class="field" id="wh-report-type" aria-label="Тип материала для отчёта">
+        <option value="" selected>Все материалы</option>
+        ${reportTypeOpts}
+      </select>
+      <label class="label" for="wh-report-q">Поиск по названию</label>
+      <input
+        type="text"
+        class="field"
+        id="wh-report-q"
+        autocomplete="off"
+        placeholder="Например: 182, чёрный, канекалон"
+      />
+    </div>`;
+
+  const cards = materials
+    .map((m) => {
+      const unitCode = m.baseUnit || m.unit || 'g';
+      const unitShort = unitCodeShort(unitCode);
+      const stock = Math.max(0, Number(m.stock) || 0);
+      const price = Math.max(0, Number(m.pricePerUnit) || 0);
+      const st = warehouseStockStatus(m);
+      const badgeCls = warehouseShelfBadgeClass(st.summary);
+      const cardMod =
+        st.summary === 'out' ? ' warehouse-stock-card--out' : '';
+      const blobEnc = encodeURIComponent(warehouseShelfSearchBlobLower(m));
+      const ostLine = `Остаток: ${esc(String(stock))} ${esc(unitShort)} · ${esc(F.money(price))}/${esc(unitShort)}`;
+      return `<article class="card warehouse-stock-card warehouse-stock-card--compact${cardMod}" data-wh-open="${
+        m.id
+      }" data-wh-search="${blobEnc}">
+        <div class="warehouse-stock-card__body warehouse-stock-card__body--compact">
+          <div class="warehouse-stock-card__head">
+            <div class="warehouse-stock-card__title">${esc(m.name)}</div>
+            <span class="${badgeCls}" aria-label="Статус: ${esc(st.label)}">${esc(st.label)}</span>
+          </div>
+          <div class="warehouse-stock-line">${ostLine}</div>
+        </div>
+      </article>`;
+    })
+    .join('');
+  const listBlock = cards.length
+    ? `<div class="list-gap">${cards}</div>`
+    : `<p class="empty-hint warehouse-empty-list">Добавьте материалы во вкладке «Материалы» или при первом пополнении склада.</p>`;
+
+  return `<header class="page-header">
+    <div><h1>Склад</h1><p class="sub">Остатки и движение материалов</p></div>
+  </header>
+  <div class="content">
+    <div class="card warehouse-summary-card">
+      <div class="card-title">На складе</div>
+      <div class="warehouse-stats">
+        <div class="warehouse-stat">
+          <span class="warehouse-stat__label muted">Позиций всего</span>
+          <span class="warehouse-stat__value">${positionsTotal}</span>
+        </div>
+        <div class="warehouse-stat">
+          <span class="warehouse-stat__label muted">Остаток на сумму</span>
+          <span class="warehouse-stat__value">${F.money(valueSumRub)}</span>
+        </div>
+        <div class="warehouse-stat">
+          <span class="warehouse-stat__label muted">Заканчиваются</span>
+          <span class="warehouse-stat__value">${finishingN}</span>
+        </div>
+        <div class="warehouse-stat">
+          <span class="warehouse-stat__label muted">Нет в наличии</span>
+          <span class="warehouse-stat__value">${outN}</span>
+        </div>
+      </div>
+    </div>
+    ${reportFilterHtml}
+    <div class="warehouse-actions">
+      <button type="button" class="btn btn-primary" id="wh-purchase">＋ Пополнить склад</button>
+      <button type="button" class="btn btn-secondary" id="wh-report">Сформировать отчёт</button>
+    </div>
+    <div class="warehouse-shelf-search">
+      <label class="label" for="wh-shelf-q">Поиск по складу</label>
+      <input
+        type="search"
+        class="field"
+        id="wh-shelf-q"
+        autocomplete="off"
+        enterkeyhint="search"
+        placeholder="Найти материал по названию, типу или цвету"
+      />
+    </div>
+    ${listBlock}
+  </div>`;
+}
+
+async function renderWarehouseReport(db) {
+  const { typeParam, queryTrimmed } = readWarehouseReportFilterParams();
+  const filterLine = warehouseReportFilterDescription(typeParam, queryTrimmed);
+
+  const materialsRaw = await db.listMaterials();
+  const catalogEmpty = !materialsRaw.length;
+  const filtered = catalogEmpty
+    ? []
+    : materialsRaw.filter((m) =>
+        materialMatchesWarehouseReportFilter(m, typeParam, queryTrimmed)
+      );
+  const {
+    materials,
+    positionsTotal,
+    valueSumRub,
+    finishingN,
+    outN,
+  } = summarizeWarehouseMaterials(filtered);
+  const generatedRu = F.formatDateRu(F.todayISO());
+
+  const summaryRows = [
+    ['Позиций всего', String(positionsTotal)],
+    ['Остаток на сумму', F.money(valueSumRub)],
+    ['Заканчиваются', String(finishingN)],
+    ['Нет в наличии', String(outN)],
+  ]
+    .map(
+      ([label, val]) =>
+        `<tr><td>${esc(label)}</td><td class="finance-report-num">${esc(val)}</td></tr>`
+    )
+    .join('');
+
+  let stockSection;
+  if (catalogEmpty) {
+    stockSection =
+      '<p class="muted warehouse-report-stock-empty">Материалы ещё не добавлены.</p>';
+  } else if (!materials.length) {
+    stockSection =
+      '<p class="muted warehouse-report-stock-empty">По выбранному фильтру материалы не найдены.</p>';
+  } else {
+    const head = `<tr>
+        <th>Материал</th>
+        <th>Тип</th>
+        <th>Остаток</th>
+        <th>Единица</th>
+        <th>Цена списания</th>
+        <th>Стоимость остатка</th>
+        <th>Минимум</th>
+        <th>Статус</th>
+      </tr>`;
+    const body = materials
+      .map((m) => {
+        const unitCode = m.baseUnit || m.unit || 'g';
+        const stock = Math.max(0, Number(m.stock) || 0);
+        const minS = Math.max(0, Number(m.minStock) || 0);
+        const price = Math.max(0, Number(m.pricePerUnit) || 0);
+        const lineVal = Math.round(stock * price);
+        const st = warehouseStockStatus(m);
+        return `<tr>
+          <td>${esc(m.name)}</td>
+          <td>${esc(m.materialType || 'прочее')}</td>
+          <td class="finance-report-num">${esc(String(stock))}</td>
+          <td>${esc(unitCodeShort(unitCode))}</td>
+          <td class="finance-report-num">${esc(F.money(price))}</td>
+          <td class="finance-report-num">${esc(F.money(lineVal))}</td>
+          <td class="finance-report-num">${esc(String(minS))}</td>
+          <td>${esc(st.label)}</td>
+        </tr>`;
+      })
+      .join('');
+    stockSection = `<div class="finance-report-table-wrap">
+      <table class="finance-report-table finance-report-table--dense" aria-label="Остатки материалов">
+        <thead>${head}</thead>
+        <tbody>${body}</tbody>
+      </table>
+    </div>`;
+  }
+
+  return `<div class="content warehouse-report-page">
+    <div class="no-print warehouse-report-actions finance-report-actions">
+      <div class="back-row"><a href="#warehouse" id="warehouse-report-back">← Назад</a></div>
+      <button type="button" class="btn btn-secondary" id="warehouse-report-print">Печать</button>
+    </div>
+    <h1 class="warehouse-report-title">Отчёт по складу</h1>
+    <p class="sub warehouse-report-meta">Сформирован: ${esc(generatedRu)}</p>
+    <div class="card warehouse-report-doc">
+      <p class="warehouse-report-brand-line">Косоплетение CRM</p>
+      <p class="warehouse-report-doc-kind">Отчёт по складу</p>
+      <p class="muted warehouse-report-lines">Дата формирования: ${esc(generatedRu)}</p>
+      <p class="muted warehouse-report-lines warehouse-report-filter-applied">Фильтр: ${esc(filterLine)}</p>
+      <h2 class="warehouse-report-section">1. Сводка</h2>
+      <div class="finance-report-table-wrap">
+        <table class="finance-report-table" aria-label="Сводка склада">
+          <thead><tr><th>Показатель</th><th>Значение</th></tr></thead>
+          <tbody>${summaryRows}</tbody>
+        </table>
+      </div>
+      <h2 class="warehouse-report-section">2. Остатки материалов</h2>
+      ${stockSection}
+    </div>
+  </div>`;
+}
+
+export function attachWarehouseReport(shell, go) {
+  const root = shell.querySelector('#app-root') || shell;
+  root.querySelector('#warehouse-report-back')?.addEventListener('click', (e) => {
+    e.preventDefault();
+    go('warehouse');
+  });
+  root.querySelector('#warehouse-report-print')?.addEventListener('click', () => {
+    window.print();
+  });
+}
+
+export function attachWarehouse(shell, go) {
+  const root = shell.querySelector('#app-root') || shell;
+  root.querySelector('#wh-purchase')?.addEventListener('click', () => go('purchase?from=warehouse'));
+  root.querySelector('#wh-report')?.addEventListener('click', () => {
+    const typeVal = String(root.querySelector('#wh-report-type')?.value ?? '').trim();
+    const qVal = String(root.querySelector('#wh-report-q')?.value ?? '').trim();
+    const qs = new URLSearchParams();
+    if (typeVal) qs.set('type', typeVal);
+    if (qVal) qs.set('q', qVal);
+    const tail = qs.toString();
+    go(tail ? `warehouse-report?${tail}` : 'warehouse-report');
+  });
+
+  const applyShelfSearch = () => {
+    const q = String(root.querySelector('#wh-shelf-q')?.value ?? '')
+      .trim()
+      .toLowerCase();
+    root.querySelectorAll('.warehouse-stock-card[data-wh-search]').forEach((card) => {
+      let hay = '';
+      try {
+        hay = decodeURIComponent(card.getAttribute('data-wh-search') || '');
+      } catch {
+        hay = '';
+      }
+      const show = !q || hay.includes(q);
+      card.style.display = show ? '' : 'none';
+    });
+  };
+  root.querySelector('#wh-shelf-q')?.addEventListener('input', applyShelfSearch);
+
+  root.querySelectorAll('[data-wh-open]').forEach((card) => {
+    card.addEventListener('click', () => {
+      go(`material-${card.getAttribute('data-wh-open')}`);
+    });
   });
 }
 
@@ -1762,14 +2192,23 @@ export function attachMaterialDetail(shell, go, id) {
     go(`edit-material-${encodeURIComponent(id)}`);
   });
   root.querySelector('#md-purchase')?.addEventListener('click', () => {
-    go(`purchase?materialId=${encodeURIComponent(id)}`);
+    go(
+      `purchase?materialId=${encodeURIComponent(id)}&from=${encodeURIComponent('materials')}`
+    );
   });
+}
+
+function purchaseBackTargetFromHash() {
+  const params = new URLSearchParams(location.hash.split('?')[1] || '');
+  return params.get('from') === 'materials' ? 'materials' : 'warehouse';
 }
 
 async function renderPurchase(db, go) {
   const materials = await db.listMaterials();
   const params = new URLSearchParams(location.hash.split('?')[1] || '');
   const preselectedMaterialId = params.get('materialId');
+  const backRoute = purchaseBackTargetFromHash();
+  const backHref = `#${backRoute}`;
   const hasMaterials = materials.length > 0;
   // (matById зарезервировано под будущие подсказки по выбранному материалу)
   const purchaseFieldLabels = (unitCode) => {
@@ -1842,7 +2281,7 @@ async function renderPurchase(db, go) {
     ([val, lab]) => `<option value="${esc(val)}">${esc(lab)}</option>`
   ).join('');
   return `<div class="content" id="pm-page-root" data-pm-has-mats="${hasMaterials ? '1' : '0'}">
-    <div class="back-row"><a href="#materials" data-back>← Материалы</a></div>
+    <div class="back-row"><a href="${esc(backHref)}" data-back>← Назад</a></div>
     <h1 style="margin:0 0 16px;font-size:1.35rem">Пополнение склада</h1>
     <p class="muted" style="margin:-4px 0 12px;line-height:1.45">Добавьте закупку материала на склад. Можно выбрать материал из списка или сразу создать новый.</p>
     ${
@@ -1935,7 +2374,7 @@ export function attachPurchase(shell, db, go, refresh) {
   const root = shell.querySelector('#app-root') || shell;
   root.querySelector('[data-back]')?.addEventListener('click', (e) => {
     e.preventDefault();
-    go('materials');
+    go(purchaseBackTargetFromHash());
   });
   root.querySelector('#pm-go-add')?.addEventListener('click', () => go('add-material'));
 
@@ -2606,33 +3045,7 @@ export function attachEditMaterial(shell, db, go, id, refresh) {
 }
 
 async function renderFinance(db, go) {
-  const params = new URLSearchParams(location.hash.split('?')[1] || '');
-  const mode = params.get('m') || 'today';
-  const today = F.todayISO();
-  const curYm = today.slice(0, 7);
-
-  const isIsoDate = (v) => /^\d{4}-\d{2}-\d{2}$/.test(String(v || ''));
-
-  let selectedYm = curYm;
-  let from = today;
-  let to = today;
-  if (mode === 'month') {
-    const ymParam = params.get('ym');
-    selectedYm = isIsoYearMonth(ymParam) ? ymParam : curYm;
-    const r = monthRange(selectedYm);
-    from = r.from;
-    to = r.to;
-  } else if (mode === 'period') {
-    const fromParam = params.get('from');
-    const toParam = params.get('to');
-    from = isIsoDate(fromParam) ? fromParam : today;
-    to = isIsoDate(toParam) ? toParam : today;
-    if (from > to) {
-      const tmp = from;
-      from = to;
-      to = tmp;
-    }
-  }
+  const { mode, from, to, selectedYm, today } = readFinancePeriodFromHash(location.hash);
 
   const appointments = await db.listAppointments();
   const movements = await db.listMovements();
@@ -2739,6 +3152,9 @@ async function renderFinance(db, go) {
     ${segHtml}
     ${monthInputs}
     ${periodInputs}
+    <button type="button" class="btn btn-primary" id="fin-open-report" style="width:100%;margin-bottom:14px">
+      Сформировать отчёт
+    </button>
     <div class="card">
       <div class="card-title">Выручка</div>
       <p class="stat-big">${F.money(revenue)}</p>
@@ -2761,6 +3177,132 @@ async function renderFinance(db, go) {
       <p class="status-line">Завершённых визитов: ${doneVisits}</p>
       <p class="status-line">Средний чек: ${F.money(avgCheck)}</p>
       <p class="status-line">Прибыль за час работы: ${F.money(profitPerHour)}</p>
+    </div>
+  </div>`;
+}
+
+async function renderFinanceReport(db) {
+  const state = readFinancePeriodFromHash(location.hash);
+  const { from, to, today } = state;
+  const periodHuman = `${F.formatDateRu(from)} – ${F.formatDateRu(to)}`;
+  const generatedRu = F.formatDateRu(today);
+  const backQs = financeReturnQuery(state);
+  const backHref = `#finance?${backQs}`;
+
+  const appointments = await db.listAppointments();
+  const movements = await db.listMovements();
+  const clients = await db.listClients();
+  const clientById = Object.fromEntries(
+    clients.map((c) => [Number(c.id), String(c?.name ?? '').trim() || 'Клиент'])
+  );
+
+  const apDone = appointments.filter(
+    (a) => a && a.status === 'done' && inRange(a.date, from, to)
+  );
+
+  const revenue = apDone.reduce((s, a) => s + (Number(a.receivedRub) || 0), 0);
+  const cogs = apDone.reduce((s, a) => s + appointmentTotalCogs(a), 0);
+  const profit = apDone.reduce((s, a) => s + (Number(a.profitRub) || 0), 0);
+  const purchases = movements.filter((m) => m.type === 'in' && inRange(m.date, from, to));
+  const purchaseSum = purchases.reduce((s, m) => s + (Number(m.totalCostRub) || 0), 0);
+  const doneVisits = apDone.length;
+  const avgCheck = doneVisits > 0 ? revenue / doneVisits : 0;
+  const hours = apDone.reduce((s, a) => s + (Number(a.actualMinutes) || 0), 0) / 60;
+  const profitPerHour = hours > 0 ? profit / hours : 0;
+
+  const summaryRows = [
+    ['Выручка', F.money(revenue)],
+    ['Себестоимость выполненных визитов', F.money(cogs)],
+    ['Прибыль', F.money(profit)],
+    ['Закупки материалов', F.money(purchaseSum)],
+    ['Завершённых визитов', String(doneVisits)],
+    ['Средний чек', F.money(avgCheck)],
+    ['Прибыль за час работы', F.money(profitPerHour)],
+  ]
+    .map(
+      ([label, val]) =>
+        `<tr><td>${esc(label)}</td><td class="finance-report-num">${esc(val)}</td></tr>`
+    )
+    .join('');
+
+  const sortedVisits = [...apDone].sort((a, b) => {
+    const da = String(a.date || '');
+    const dbi = String(b.date || '');
+    if (da !== dbi) return da.localeCompare(dbi);
+    return String(a.time || '').localeCompare(String(b.time || ''));
+  });
+
+  let visitsBlock;
+  if (!sortedVisits.length) {
+    visitsBlock =
+      '<p class="muted finance-report-empty">Нет завершённых визитов за выбранный период.</p>';
+  } else {
+    const head = `<tr>
+        <th>Дата</th>
+        <th>Время</th>
+        <th>Клиент</th>
+        <th>Услуга</th>
+        <th>Оплачено клиентом</th>
+        <th>Материалы</th>
+        <th>Работа</th>
+        <th>Расходы на заказ</th>
+        <th>Итоговая себестоимость</th>
+        <th>Прибыль</th>
+      </tr>`;
+    const body = sortedVisits
+      .map((a) => {
+        const cid = Number(a.clientId);
+        const cname = Number.isFinite(cid) ? clientById[cid] || 'Клиент' : 'Клиент';
+        const svc = String(a.serviceNameSnapshot ?? '—').trim() || '—';
+        const matRub = Number(a.materialCostRub) || 0;
+        const laborRub = Number(a.laborCostRub) || 0;
+        const fixedRub = Number(a.orderFixedCostRub) || 0;
+        const totalCogs = appointmentTotalCogs(a);
+        return `<tr>
+            <td>${esc(F.formatDateRu(a.date))}</td>
+            <td>${esc(F.formatTime(a.time))}</td>
+            <td>${esc(cname)}</td>
+            <td>${esc(svc)}</td>
+            <td class="finance-report-num">${esc(F.money(Number(a.receivedRub) || 0))}</td>
+            <td class="finance-report-num">${esc(F.money(matRub))}</td>
+            <td class="finance-report-num">${esc(F.money(laborRub))}</td>
+            <td class="finance-report-num">${esc(F.money(fixedRub))}</td>
+            <td class="finance-report-num">${esc(F.money(totalCogs))}</td>
+            <td class="finance-report-num">${esc(F.money(Number(a.profitRub) || 0))}</td>
+          </tr>`;
+      })
+      .join('');
+    visitsBlock = `<div class="finance-report-table-wrap">
+      <table class="finance-report-table finance-report-table--dense" aria-label="Завершённые визиты">
+        <thead>${head}</thead>
+        <tbody>${body}</tbody>
+      </table>
+    </div>`;
+  }
+
+  return `<div class="content finance-report-page">
+    <div class="no-print finance-report-actions">
+      <div class="back-row"><a href="${esc(backHref)}" id="fin-report-back">← Назад</a></div>
+      <button type="button" class="btn btn-secondary" id="fin-report-print">Печать</button>
+    </div>
+    <h1 class="finance-report-title">Отчёт по финансам: ${esc(periodHuman)}</h1>
+    <p class="sub finance-report-meta">Сформирован: ${esc(generatedRu)}</p>
+    <div class="card finance-report-doc">
+      <p class="finance-report-brand-line">Косоплетение CRM</p>
+      <p class="finance-report-doc-kind">Финансовый отчёт</p>
+      <p class="muted finance-report-lines">Период: ${esc(periodHuman)}</p>
+      <p class="muted finance-report-lines">Дата формирования: ${esc(generatedRu)}</p>
+      <h2 class="finance-report-section">1. Сводка</h2>
+      <div class="finance-report-table-wrap">
+        <table class="finance-report-table" aria-label="Сводные показатели">
+          <thead>
+            <tr><th>Показатель</th><th>Значение</th></tr>
+          </thead>
+          <tbody>${summaryRows}</tbody>
+        </table>
+      </div>
+      <h2 class="finance-report-section">2. Завершённые визиты</h2>
+      ${visitsBlock}
     </div>
   </div>`;
 }
@@ -3003,8 +3545,26 @@ export function attachServiceDetail(shell, db, go, id, refresh) {
   });
 }
 
+export function attachFinanceReport(shell, go) {
+  const root = shell.querySelector('#app-root') || shell;
+  root.querySelector('#fin-report-back')?.addEventListener('click', (e) => {
+    e.preventDefault();
+    const qs = financeReturnQuery(readFinancePeriodFromHash(location.hash));
+    go(`finance?${qs}`);
+  });
+  root.querySelector('#fin-report-print')?.addEventListener('click', () => {
+    window.print();
+  });
+}
+
 export function attachFinance(shell, go) {
   const root = shell.querySelector('#app-root') || shell;
+  root.querySelector('#fin-open-report')?.addEventListener('click', () => {
+    const h = location.hash.replace(/^#/, '');
+    const qi = h.indexOf('?');
+    const qs = qi >= 0 ? h.slice(qi + 1) : 'm=today';
+    location.hash = `finance-report?${qs}`;
+  });
   const navigateMode = (m) => {
     if (m === 'period') {
       const d = F.todayISO();

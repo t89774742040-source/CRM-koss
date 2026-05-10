@@ -525,6 +525,12 @@ textarea.field {
   color: #047857;
 }
 
+/* Склад: нет в наличии — спокойно, без резкого красного */
+.badge.out {
+  background: #f4f4f5;
+  color: #9f5969;
+}
+
 .status-line {
   font-size: 0.85rem;
   color: var(--muted);
@@ -562,24 +568,31 @@ textarea.field {
 
 .nav-bottom a {
   flex: 1;
+  min-width: 0;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
   gap: 2px;
-  font-size: 0.65rem;
+  font-size: 0.56rem;
   color: var(--muted);
-  padding: 8px 4px 6px;
-  margin: 4px 2px;
-  border-radius: 12px;
+  padding: 6px 1px 5px;
+  margin: 3px 1px;
+  border-radius: 10px;
   transition:
     background 0.15s ease,
     color 0.15s ease;
 }
 
 .nav-bottom a .ico {
-  font-size: 1.25rem;
+  font-size: 1.06rem;
   line-height: 1;
+}
+
+.nav-bottom a span:not(.ico) {
+  max-width: 100%;
+  text-align: center;
+  line-height: 1.15;
 }
 
 .nav-bottom a.active {
@@ -777,9 +790,501 @@ textarea.field {
   z-index: 1;
 }
 
+/* Экран финансового отчёта */
+.finance-report-page {
+  padding-bottom: 28px;
+}
+
+.finance-report-title {
+  font-size: 1.12rem;
+  font-weight: 700;
+  margin: 6px 0 4px;
+  line-height: 1.35;
+  letter-spacing: -0.02em;
+}
+
+.finance-report-meta {
+  margin: 0 0 16px !important;
+  font-size: 0.92rem !important;
+}
+
+.finance-report-doc {
+  padding: 18px 16px;
+}
+
+.finance-report-brand-line {
+  margin: 0 0 2px;
+  font-size: 0.92rem;
+  font-weight: 700;
+  color: var(--accent);
+}
+
+.finance-report-doc-kind {
+  margin: 0 0 12px;
+  font-size: 1.08rem;
+  font-weight: 700;
+}
+
+.finance-report-lines {
+  margin: 0 0 6px;
+  font-size: 0.9rem !important;
+  line-height: 1.4;
+}
+
+.finance-report-lines:last-of-type {
+  margin-bottom: 14px !important;
+}
+
+.finance-report-section {
+  margin: 18px 0 12px;
+  font-size: 1rem;
+  font-weight: 700;
+}
+
+.finance-report-section:first-of-type {
+  margin-top: 14px;
+}
+
+.finance-report-table-wrap {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  margin: 0 -4px;
+  padding: 0 4px 4px;
+  border-radius: var(--radius-sm);
+}
+
+table.finance-report-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.875rem;
+  background: var(--card);
+}
+
+table.finance-report-table--dense {
+  font-size: 0.78rem;
+}
+
+table.finance-report-table th,
+table.finance-report-table td {
+  border: 1px solid var(--line);
+  padding: 9px 10px;
+  text-align: left;
+  vertical-align: top;
+}
+
+table.finance-report-table--dense th,
+table.finance-report-table--dense td {
+  padding: 7px 8px;
+}
+
+table.finance-report-table th {
+  background: var(--accent-soft);
+  color: #5b21b6;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+table.finance-report-table td.finance-report-num {
+  text-align: right;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.finance-report-empty {
+  margin: 4px 0 0;
+  font-size: 0.92rem;
+  line-height: 1.45;
+}
+
+.finance-report-actions {
+  margin-bottom: 12px;
+}
+
+.finance-report-actions .back-row {
+  margin-bottom: 10px;
+}
+
+.finance-report-actions .btn-secondary {
+  width: 100%;
+}
+
+/* Отчёт по складу — экран (аналог финансового отчёта) */
+.warehouse-report-page {
+  padding-bottom: 28px;
+}
+
+.warehouse-report-title {
+  font-size: 1.12rem;
+  font-weight: 700;
+  margin: 6px 0 4px;
+  line-height: 1.35;
+  letter-spacing: -0.02em;
+}
+
+.warehouse-report-meta {
+  margin: 0 0 16px !important;
+  font-size: 0.92rem !important;
+}
+
+.warehouse-report-doc {
+  padding: 18px 16px;
+}
+
+.warehouse-report-brand-line {
+  margin: 0 0 2px;
+  font-size: 0.92rem;
+  font-weight: 700;
+  color: var(--accent);
+}
+
+.warehouse-report-doc-kind {
+  margin: 0 0 12px;
+  font-size: 1.08rem;
+  font-weight: 700;
+}
+
+.warehouse-report-lines {
+  margin: 0 0 6px;
+  font-size: 0.9rem !important;
+  line-height: 1.4;
+}
+
+.warehouse-report-filter-applied {
+  font-weight: 600;
+}
+
+.warehouse-report-section {
+  margin: 18px 0 12px;
+  font-size: 1rem;
+  font-weight: 700;
+}
+
+.warehouse-report-section:first-of-type {
+  margin-top: 14px;
+}
+
+.warehouse-report-stock-empty {
+  margin: 6px 0 0;
+  font-size: 0.92rem;
+  line-height: 1.45;
+}
+
+.warehouse-report-actions .btn-secondary {
+  width: 100%;
+}
+
+@media print {
+  .no-print {
+    display: none !important;
+  }
+
+  html,
+  body {
+    background: #fff !important;
+    color: #111827;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+
+  #shell {
+    padding-bottom: 0 !important;
+    min-height: 0 !important;
+  }
+
+  .app-wrap {
+    max-width: none;
+  }
+
+  .nav-bottom {
+    display: none !important;
+  }
+
+  .finance-report-page {
+    padding-bottom: 0 !important;
+  }
+
+  .finance-report-title {
+    font-size: 1.05rem;
+    margin-top: 0;
+  }
+
+  .finance-report-meta {
+    margin-bottom: 10px !important;
+  }
+
+  .finance-report-doc.card {
+    box-shadow: none !important;
+    border: 1px solid #d1d5db;
+    padding: 14px 12px;
+    break-inside: avoid;
+  }
+
+  .finance-report-brand-line {
+    color: #5b21b6 !important;
+  }
+
+  .finance-report-table-wrap {
+    overflow: visible !important;
+    margin: 0;
+    padding: 0;
+  }
+
+  table.finance-report-table {
+    background: #fff !important;
+    font-size: 0.82rem;
+    color: #111827 !important;
+  }
+
+  table.finance-report-table--dense {
+    font-size: 0.72rem;
+  }
+
+  table.finance-report-table th {
+    background: #ede9fe !important;
+    color: #111827 !important;
+  }
+
+  table.finance-report-table th,
+  table.finance-report-table td {
+    border-color: #9ca3af !important;
+  }
+
+  table.finance-report-table thead {
+    display: table-header-group;
+  }
+
+  table.finance-report-table tr {
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
+
+  .finance-report-section {
+    break-after: avoid;
+  }
+
+  /* ----- Печать: отчёт по складу — нейтрально, без фиолета в таблице ----- */
+  .warehouse-report-page {
+    padding-bottom: 0 !important;
+  }
+
+  .warehouse-report-title {
+    font-size: 1.05rem;
+    margin-top: 0;
+    color: #111827 !important;
+  }
+
+  .warehouse-report-meta {
+    margin-bottom: 10px !important;
+    color: #374151 !important;
+  }
+
+  /* Отчёт на печати — без «карточной» обводки вокруг блока, только текст и таблицы */
+  .warehouse-report-doc.card {
+    box-shadow: none !important;
+    border: none !important;
+    border-radius: 0 !important;
+    outline: none !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    margin-bottom: 0 !important;
+    break-inside: avoid;
+    background: transparent !important;
+    color: #111827 !important;
+  }
+
+  .warehouse-report-brand-line {
+    color: #374151 !important;
+  }
+
+  .warehouse-report-doc-kind {
+    color: #111827 !important;
+  }
+
+  .warehouse-report-doc .muted,
+  .warehouse-report-lines {
+    color: #374151 !important;
+  }
+
+  .warehouse-report-doc .finance-report-table th {
+    background: #e5e7eb !important;
+    color: #111827 !important;
+  }
+
+  .warehouse-report-doc .finance-report-table td {
+    background: #fff !important;
+    color: #111827 !important;
+  }
+
+  .warehouse-report-stock-empty {
+    color: #374151 !important;
+  }
+
+  .warehouse-report-section {
+    break-after: avoid;
+    color: #111827 !important;
+  }
+}
+
 .muted {
   color: var(--muted);
   font-size: 0.9rem;
+}
+
+/* Экран «Склад» */
+.warehouse-summary-card .warehouse-stats {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px 14px;
+  margin-top: 4px;
+}
+
+.warehouse-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.warehouse-stat__label {
+  font-size: 0.78rem !important;
+  line-height: 1.3;
+}
+
+.warehouse-stat__value {
+  font-size: 1.05rem;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+
+/* Фильтр перед отчётом по складу */
+.warehouse-report-filter-card {
+  margin-bottom: 12px;
+}
+
+.warehouse-report-filter-card .label:first-of-type {
+  margin-top: 2px;
+}
+
+.warehouse-report-filter-card .field + .label {
+  margin-top: 12px;
+}
+
+/* Кнопки «Пополнить» и «Отчёт» на вкладке «Склад» */
+.warehouse-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.warehouse-actions .btn-primary,
+.warehouse-actions .btn-secondary {
+  width: 100%;
+}
+
+/* Быстрый поиск по списку склада (отдельно от «Фильтр отчёта») */
+.warehouse-shelf-search {
+  margin-bottom: 12px;
+}
+
+.warehouse-shelf-search .label {
+  margin-bottom: 6px;
+}
+
+/* Карточка позиции на складе — только бейдж статуса, без дубля текста «Статус:» */
+.warehouse-stock-card__head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.warehouse-stock-card__title {
+  font-weight: 700;
+  flex: 1;
+  min-width: 0;
+  line-height: 1.3;
+}
+
+.warehouse-stock-card__head + .status-line {
+  margin-top: 8px;
+}
+
+.warehouse-stock-card .warehouse-stock-card__muted {
+  color: var(--muted);
+}
+
+.warehouse-stock-card--compact.card {
+  padding: 11px 14px;
+  margin-bottom: 8px;
+}
+
+.warehouse-stock-card__body--compact .warehouse-stock-card__title {
+  font-size: 0.93rem;
+  line-height: 1.25;
+}
+
+.warehouse-stock-line {
+  margin-top: 6px;
+  font-size: 0.82rem;
+  line-height: 1.35;
+  color: var(--muted);
+}
+
+.warehouse-stock-card--compact .warehouse-badge {
+  font-size: 0.71rem;
+  padding: 4px 10px;
+}
+
+.warehouse-stock-card--out .warehouse-stock-card__title {
+  color: #4b5563;
+}
+
+.warehouse-stock-card--out .warehouse-stock-card__muted {
+  color: #6b7280;
+}
+
+.warehouse-stock-card--out .warehouse-stock-line {
+  color: #6b7280;
+}
+
+.warehouse-badge {
+  display: inline-flex;
+  align-items: center;
+  font-size: 0.76rem;
+  font-weight: 700;
+  padding: 6px 12px;
+  border-radius: 999px;
+  flex-shrink: 0;
+  line-height: 1.2;
+}
+
+.warehouse-badge--ok {
+  background: #d1fae5;
+  color: #047857;
+  border: 1px solid #6ee7b7;
+}
+
+.warehouse-badge--low {
+  background: #ffedd5;
+  color: #9a3412;
+  border: 1px solid #fdba74;
+}
+
+.warehouse-badge--out {
+  background: #fee2e2;
+  color: #991b1b;
+  border: 1px solid #fca5a5;
+}
+
+.warehouse-stock-card {
+  cursor: pointer;
+}
+
+.warehouse-empty-list {
+  margin: 8px 0 0;
+  text-align: center;
+  line-height: 1.45;
 }
 
 /* «Тест и сохранение данных»: вертикальный ритм, подписи только под кнопками */

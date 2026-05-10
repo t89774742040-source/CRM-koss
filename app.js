@@ -9,11 +9,14 @@ import {
   attachClients,
   attachClientDetail,
   attachMaterials,
+  attachWarehouse,
   attachMaterialDetail,
   attachPurchase,
   attachAddMaterial,
   attachEditMaterial,
   attachFinance,
+  attachFinanceReport,
+  attachWarehouseReport,
   attachServices,
   attachAddService,
   attachServiceDetail,
@@ -88,6 +91,9 @@ async function render() {
     case 'materials':
       attachMaterials(shell, db, go);
       break;
+    case 'warehouse':
+      attachWarehouse(shell, go);
+      break;
     case 'material':
       attachMaterialDetail(shell, go, p.id);
       break;
@@ -111,6 +117,12 @@ async function render() {
       break;
     case 'finance':
       attachFinance(shell, go);
+      break;
+    case 'finance-report':
+      attachFinanceReport(shell, go);
+      break;
+    case 'warehouse-report':
+      attachWarehouseReport(shell, go);
       break;
     case 'settings':
       attachSettings(shell, db, go, refreshMeta);
